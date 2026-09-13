@@ -26,20 +26,47 @@ const GOOS_FOR_PLATFORM = { win32: 'windows', darwin: 'darwin', linux: 'linux' }
 const localGoos = GOOS_FOR_PLATFORM[process.platform] ?? process.platform;
 const localGoarch = process.arch === 'arm64' ? 'arm64' : 'amd64';
 
+/**
+ * `--all` 的三平台发布矩阵是**固定**的，不要用 localGoos 替代其中一项。
+ *
+ * 曾经的写法把第三项写成 `{ goos: localGoos }`，于是：
+ *   - 在 Linux CI 上 → 第三项也是 linux/amd64，**与第一项重复**，
+ *     而 `dsh-pocket-relay-windows-amd64.exe` **永远不会被构建**，
+ *     Release 资产里就少了 Windows 二进制（线上真发生过）；
+ *   - 在 macOS 上 → 变成一个 darwin 产物，Release 少 Windows。
+ * 发布矩阵必须与 workflow 里上传的资产名严格一致，所以这里写死三个平台。
+ */
+const RELEASE_MATRIX = [
+  { goos: 'linux', goarch: 'amd64' },
+  { goos: 'linux', goarch: 'arm64' },
+  { goos: 'windows', goarch: 'amd64' },
+];
+
 const targets = all
   ? [
-    { goos: 'linux', goarch: 'amd64' },
-    { goos: 'linux', goarch: 'arm64' },
-    { goos: localGoos, goarch: localGoarch },
-    // --all 也产出**本机平台的无后缀名字**：test/helpers/go-relay.mjs 按这个名字找
+    ...RELEASE_MATRIX,
+    // 额外产出**本机平台的无后缀名字**：test/helpers/go-relay.mjs 按这个名字找
     // 二进制，缺了它测试会拿上一次的陈旧产物跑（表现为版本号对不上）。
+    // 它与上面的矩阵互不重叠（除非本机正好是矩阵中的一项，那时只是再写一遍同名文件）。
     { goos: localGoos, goarch: localGoarch, bare: true },
   ]
   : [{ goos: null, goarch: null, bare: true }]; // 当前平台
 
+// 去重：本机平台若正好落在发布矩阵里（例如 Linux CI 的本机就是 linux/amd64），
+// 上面的 bare 项不会与矩阵项重名，但防御性地保留一份可读的去重逻辑，
+// 避免将来改矩阵时出现「同一文件名构建两次」的隐性浪费。
+const seen = new Set();
+const uniqueTargets = targets.filter((t) => {
+  const ext = (t.goos ?? localGoos) === 'windows' ? '.exe' : '';
+  const key = t.bare ? `bare:${t.goos}:${t.goarch}` : `${t.goos}-${t.goarch}${ext}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  return true;
+});
+
 mkdirSync(distDir, { recursive: true });
 
-for (const t of targets) {
+for (const t of uniqueTargets) {
   const goos = t.goos ?? localGoos;
   const ext = goos === 'windows' ? '.exe' : '';
   const suffix = t.bare ? '' : `-${goos}-${t.goarch}`;
