@@ -1,3 +1,11 @@
+## [1.0.1](https://github.com/kinderao/dsh-pocket-relay/compare/v1.0.0...v1.0.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **build:** --all 的发布矩阵必须是固定三平台，不能拿 localGoos 顶替 ([d38a9ec](https://github.com/kinderao/dsh-pocket-relay/commit/d38a9ec13daf14102d2723bb2874897dfea10848)), closes [#2](https://github.com/kinderao/dsh-pocket-relay/issues/2)
+* **release:** 补发 npm 包并修正 Windows 发布资产 ([3d25a9b](https://github.com/kinderao/dsh-pocket-relay/commit/3d25a9bc59de581a58670de5ca40cb9de752f127)), closes [#1](https://github.com/kinderao/dsh-pocket-relay/issues/1) [#2](https://github.com/kinderao/dsh-pocket-relay/issues/2)
+
 # 1.0.0 (2026-09-13)
 
 
