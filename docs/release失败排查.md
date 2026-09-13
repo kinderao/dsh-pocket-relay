@@ -1,8 +1,25 @@
 # Release 首次运行失败：诊断与修复
 
-## 现象
+## 结论（已由 CI 日志确认）
 
-GitHub Actions → Release #1：`release` job 27s 后 **Failure**，`relay-binaries` 被跳过（它 `needs: release`）。
+```
+npm error code E403
+npm error 403 403 Forbidden - PUT https://registry.npmjs.org/dsh-pocket-relay
+npm error 403 - You may not perform that action with these credentials.
+```
+
+**这是 token 权限问题，不是代码问题，也不是包名被占。**
+
+关键区分：
+
+| 码 | 含义 |
+| --- | --- |
+| `E401` | 没读到凭据 / 凭据无效 → 属于「secret 没配好」 |
+| **`E403`（本次）** | **凭据有效、身份已认证，但这个账号无权做这个动作** |
+
+而且 npm 在「包名已被占用」时会明确说 *You cannot publish over the previously published versions* ——
+本次日志里**没有**这句，且 `https://registry.npmjs.org/dsh-pocket-relay` 仍返回 **404**（名字空着）。
+所以可以排除「名字被抢」，问题锁定在 token 的权限上。
 
 ## 逐步结论（来自 GitHub API，不是猜测）
 
@@ -27,7 +44,7 @@ Windows 专有（spawn 无扩展名的 `cloudflared` 脚本 → ENOENT），Linu
 | --- | --- | --- |
 | 1. 分析提交、定版本、写 CHANGELOG | ✅ 成功 | 远端多了 `ed13213 chore(release): 1.0.0 [skip ci]`，`CHANGELOG.md` +179 行 |
 | 2. 打 tag 并推送 | ✅ 成功 | 远端 `refs/tags/v1.0.0` → `ed13213` |
-| 3. `npm publish` | ❌ 失败 | npm 上 `dsh-pocket-relay` 仍然 **404**（包名未被占用） |
+| 3. `npm publish` | ❌ 失败（E403） | npm 上 `dsh-pocket-relay` 仍然 **404**（包名未被占用） |
 
 于是留下一个**半发布状态**：
 
@@ -35,7 +52,7 @@ Windows 专有（spawn 无扩展名的 `cloudflared` 脚本 → ENOENT），Linu
 - **npm 侧**：什么都没有；
 - **CI 侧**：job 标红。
 
-## 根因：npm 凭据
+## 根因：token 的类型 / 权限
 
 `semantic-release` 的 npm 插件（`@semantic-release/npm/lib/set-npmrc-auth.js`）**只认环境变量 `NPM_TOKEN`**：
 
@@ -43,12 +60,26 @@ Windows 专有（spawn 无扩展名的 `cloudflared` 脚本 → ENOENT），Linu
 if (NPM_TOKEN) { ... `${nerfDart(registry)}:_authToken = \${NPM_TOKEN}` }
 ```
 
-workflow 里已经把它传进去了（`NPM_TOKEN: ${{ secrets.NPM_TOKEN }}`），所以失败只可能是：
+workflow 写法正确、token 也确实被读到了（否则是 E401 而不是 E403）。**403 的成因按概率：**
 
-1. **secret 没建 / 名字不是 `NPM_TOKEN`**（大小写敏感）；
-2. **token 类型不对**：发布**新包名**必须用 **Automation** token（Classic 的 Publish token 在新包上可能被 2FA 拦；Granular token 需要显式勾选 *Read and write* 权限并允许 bypass 2FA）；
-3. **token 已过期或被 revoke**；
-4. token 是从别的账号建的，对该 scope/包名无发布权。
+1. **用了 Granular Access Token，但权限不足** —— npm 的 Granular token 默认**只读**，必须在
+   *Permissions → Packages and scopes* 里显式给 **Read and write**，并允许 **bypass 2FA**；
+2. **用了 Classic 的 "Publish" token，而账号开了 2FA** —— 首次发布**新包**这种情况会 403；
+   正确类型是 **Automation**（专为 CI 设计，绕过 2FA 交互）；
+3. token 属于**另一个账号**（对该包名没有发布权）；
+4. token 已被 revoke / 过期（虽然通常报 E401）。
+
+### 修复：重新生成一个 Automation token
+
+1. 登录 npmjs.com → 右上头像 → **Account Settings** → **Access Tokens**
+2. **Generate New Token** → 选 **Automation**（⚠️ 不要选 Classic 的 Publish，也不要只给 Granular 只读）
+3. 复制 token（形如 `npm_xxxxxxxx`，**只显示一次**）
+4. GitHub 仓库 → **Settings → Secrets and variables → Actions → Repository secrets**
+   → 找到 `NPM_TOKEN` → **Update**（或删掉重建）→ 粘贴新 token
+   - ⚠️ 必须在 **Repository secrets**，不能建在 **Environment secrets**：本 workflow 的 job
+     **没有声明 `environment:`**，读不到 Environment secret；
+   - ⚠️ 名字必须精确是 `NPM_TOKEN`（大小写敏感）。
+5. 顺带确认 **npm 账号邮箱已验证**（未验证不能发布）。
 
 ## 修复步骤
 
@@ -61,19 +92,11 @@ cd D:\code\ai\dsh-pocket-remote
 git pull --ff-only origin main
 ```
 
-### 2) 确认 secret 名称与类型
+### 2) 重新生成 token 并更新 secret
 
-GitHub 仓库 → **Settings → Secrets and variables → Actions**：
+见上节。
 
-- 必须叫 **`NPM_TOKEN`**（与 workflow 里的 `${{ secrets.NPM_TOKEN }}` 完全一致）；
-- 值来自 npm：**Account Settings → Access Tokens → Generate New Token → 选 "Automation"**。
-  - ⚠️ 不要选 "Classic → Publish"，也不要只给 Granular 的只读权限——发布**新包**需要 Automation（它绕过 2FA 交互）。
-
-### 3) 确认 npm 账号已完成邮箱验证
-
-未验证邮箱的账号不能发布。登录 npmjs.com 看顶部是否有验证提示。
-
-### 4) 重新发版前先决定「1.0.0 还算不算数」
+### 3) 重新发版前先决定「1.0.0 还算不算数」
 
 - **`v1.0.0` tag 已经存在**（指向 `ed13213`），`package.json` 也已是 `1.0.0`。
   semantic-release 以 tag 为「已发布的版本」基准，**重跑不会再次发布 1.0.0**。
@@ -101,7 +124,7 @@ GitHub 仓库 → **Settings → Secrets and variables → Actions**：
   > 注意：`ed13213` 那个 release 提交已经改了 `package.json` 与 `CHANGELOG.md`，
   > 删 tag 后重跑会再生成一次提交，CHANGELOG 可能出现重复段落——可接受，或手工整理。
 
-### 5) 修好凭据后重跑
+### 4) 修好凭据后重跑
 
 ```
 Actions → Release → Run workflow
@@ -120,7 +143,9 @@ Actions → Release → Run workflow
 | `npm test` | ✅ **CI 上通过**；本地 2 红是 Windows 专有问题 |
 | lockfile 与 package.json 同步 | ✅ |
 | `publishConfig` | ✅ `{access: public, registry: registry.npmjs.org}` |
-| workflow 的 `NPM_TOKEN` 传参 | ✅ 写法正确 |
+| workflow 的 `NPM_TOKEN` 传参 | ✅ 写法正确，且 token 确实被读到了（E403 而非 E401） |
+| 包名 `dsh-pocket-relay` | ✅ **仍未被占用**（registry 返回 404）→ 不是「名字被抢」 |
+| registry 可达 | ✅ `/-/ping` 返回 200 |
 | `relay-binaries` 被跳过 | ✅ **正确行为**（`needs: release`，前置失败就该跳过） |
 | Node 20 deprecated 警告 | ✅ 仅警告，不影响；可后续把 actions 升到 v5 |
 
