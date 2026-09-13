@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/kinderao/dsh-pocket-relay/compare/v1.0.0...v1.0.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **release:** 关闭 semantic-release 的自动评论，避免二进制产物被连带跳过 ([f1af780](https://github.com/kinderao/dsh-pocket-relay/commit/f1af780d8d66488cca0257aa9060f993c4cdf2e7)), closes [#117](https://github.com/kinderao/dsh-pocket-relay/issues/117) [#99](https://github.com/kinderao/dsh-pocket-relay/issues/99)
+
 # 1.0.0 (2026-09-13)
 
 
