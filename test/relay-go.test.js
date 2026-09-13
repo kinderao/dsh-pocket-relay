@@ -257,7 +257,10 @@ test('Go relay：Web 管理端起得来，且未认证时被拦住', { skip: HAS
     const st = await fetch(`${base}/api/status`, { headers: { cookie } });
     assert.equal(st.status, 200);
     const body = await st.json();
-    assert.equal(body.version, '0.1.0');
+    // 只断言「版本号被注入进来了」，不写死具体值：写死的话每次改 build.mjs 的
+    // 默认版本（或 CI 传 DSHP_RELAY_VERSION）都会红，而这条测试关心的是
+    // 管理端能不能起来 + version 字段有没有漏——不是版本号本身的数值。
+    assert.match(body.version, /^\d+\.\d+\.\d+$/, `version 应当是语义化版本号，实际：${body.version}`);
     assert.equal(body.hub.streams, 0);
   } finally {
     await relay.close();

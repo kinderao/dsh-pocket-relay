@@ -20,25 +20,35 @@ const all = process.argv.includes('--all');
 // 发版时改这里的默认值，或临时用 DSHP_RELAY_VERSION=… 覆盖。
 const version = process.env.DSHP_RELAY_VERSION ?? '0.3.0';
 
+// Node 的 process.platform 是 'win32'，而 GOOS 是 'windows'；本机平台目标要显式转换，
+// 否则 go 会报 "unsupported GOOS/GOARCH pair win32/null"。
+const GOOS_FOR_PLATFORM = { win32: 'windows', darwin: 'darwin', linux: 'linux' };
+const localGoos = GOOS_FOR_PLATFORM[process.platform] ?? process.platform;
+const localGoarch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+
 const targets = all
   ? [
     { goos: 'linux', goarch: 'amd64' },
     { goos: 'linux', goarch: 'arm64' },
-    { goos: process.platform === 'win32' ? 'windows' : 'darwin', goarch: 'amd64' },
+    { goos: localGoos, goarch: localGoarch },
+    // --all 也产出**本机平台的无后缀名字**：test/helpers/go-relay.mjs 按这个名字找
+    // 二进制，缺了它测试会拿上一次的陈旧产物跑（表现为版本号对不上）。
+    { goos: localGoos, goarch: localGoarch, bare: true },
   ]
-  : [{ goos: null, goarch: null }]; // 当前平台
+  : [{ goos: null, goarch: null, bare: true }]; // 当前平台
 
 mkdirSync(distDir, { recursive: true });
 
 for (const t of targets) {
-  const ext = (t.goos ?? process.platform) === 'win32' || t.goos === 'windows' ? '.exe' : '';
-  const suffix = t.goos ? `-${t.goos}-${t.goarch}` : '';
-  // 当前平台同时产出一个不带后缀的名字，方便测试与本地直接运行
-  const names = t.goos ? [`dsh-pocket-relay${suffix}${ext}`] : [`dsh-pocket-relay${ext}`];
+  const goos = t.goos ?? localGoos;
+  const ext = goos === 'windows' ? '.exe' : '';
+  const suffix = t.bare ? '' : `-${goos}-${t.goarch}`;
+  // 本机平台额外产出一个不带后缀的名字，方便测试与本地直接运行
+  const names = [`dsh-pocket-relay${suffix}${ext}`];
   const out = resolve(distDir, names[0]);
 
   const env = { ...process.env, CGO_ENABLED: '0' };
-  if (t.goos) { env.GOOS = t.goos; env.GOARCH = t.goarch; }
+  if (t.goos) { env.GOOS = goos; env.GOARCH = t.goarch; }
 
   console.log(`building ${names[0]} …`);
   // 刻意不用 shell：Windows 上 shell:true 会把 -ldflags "-s -w -X …" 拆成
