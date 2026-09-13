@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSH Pocket Relay · 管理端</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#e6e9ef; --muted:#8b93a1;
+    --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --brand:#4f6ef7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:20px 16px 56px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+  h1{font-size:17px;margin:0;display:flex;align-items:center;gap:8px}
+  h1 small{color:var(--muted);font-weight:400;font-size:12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 18px}
+  .card h2{font-size:13px;margin:0 0 12px;color:var(--muted);font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+  .row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:13px}
+  .row:last-child{border-bottom:0}
+  .row b{font-weight:600}
+  .muted{color:var(--muted);font-size:12px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
+  .ok{background:var(--ok)} .warn{background:var(--warn)} .bad{background:var(--bad)} .idle{background:#4b5563}
+  code{background:#0f1115;border:1px solid var(--line);padding:2px 7px;border-radius:6px;font-size:12px;word-break:break-all}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--fg);height:32px;padding:0 14px;border-radius:999px;font-size:13px}
+  button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  button:disabled{opacity:.5;cursor:default}
+  textarea{width:100%;min-height:74px;background:#0f1115;border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:9px 11px;font:12px/1.6 ui-monospace,Menlo,monospace;resize:vertical}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:9px;padding:11px 13px;margin:0;max-height:320px;overflow:auto;font:11.5px/1.65 ui-monospace,Menlo,monospace;color:#c9d1d9;white-space:pre-wrap;word-break:break-all}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:rgba(23,26,33,.97);border:1px solid var(--line);border-radius:10px;padding:10px 16px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
+  .toast.show{opacity:1}
+  a{color:var(--brand)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;letter-spacing:.3px;text-transform:uppercase;padding:0 10px 7px 0;white-space:nowrap}
+  td{padding:9px 10px 9px 0;border-top:1px solid rgba(255,255,255,.06);vertical-align:middle}
+  td.name{font-weight:600;white-space:nowrap}
+  td.time{color:var(--muted);white-space:nowrap}
+  td.acts{text-align:right;white-space:nowrap}
+  td.acts button{height:26px;padding:0 11px;font-size:12px;margin-left:6px}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);margin-left:6px;vertical-align:1px}
+  .tag.on{border-color:var(--brand);color:#aab8ff}
+  .tag.serve{border-color:var(--ok);color:var(--ok)}
+  .tag.stale{border-color:var(--warn);color:var(--warn)}
+  .empty{color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🛰 DSH Pocket Relay <small id="ver"></small></h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="muted" id="uptime"></span>
+      <button onclick="location.href='/logout'">退出</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>运行状态</h2>
+      <div class="row"><span>接流电脑</span><b id="agents">—</b></div>
+      <div class="row"><span>进行中的连接</span><b id="streams">—</b></div>
+      <div class="row"><span>访客入口</span><span id="publicUrl" class="muted">—</span></div>
+      <div class="row"><span>agent 端口</span><code id="agentAddr">—</code></div>
+      <div class="row"><span>visitor 端口</span><code id="visitorAddr">—</code></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>电脑（PC 端）</h2>
+      <div class="muted" style="margin-bottom:10px">
+        每台电脑在插件里填一个「本机名称」就会分别登记在这里。访客流量只送给
+        <b>接流</b> 的那台；它掉线时自动落到最早连上来的另一台（热备）。
+        首选电脑可在下面切换，或直接改电脑上的「本机名称」。
+      </div>
+      <div id="agentTable"></div>
+    </div>
+
+    <div class="card">
+      <h2>证书</h2>
+      <div id="certBody"></div>
+      <div style="margin-top:12px"><button class="primary" id="renewBtn" onclick="renew()">立即续期</button></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Agent Token</h2>
+      <div class="muted" style="margin-bottom:9px">
+        PC 端（DSH Desktop → 设置 → 手机访问 → 中继）要填这一串才能连上来。
+        它是你电脑的访问凭据 —— 拿到它就等于能接走所有访客流量，<b>别外发</b>。
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <code id="tokenValue" style="flex:1;min-width:220px;padding:8px 11px">••••••••••••••••••••••••</code>
+        <button id="tokenToggle" onclick="toggleToken()">显示</button>
+        <button onclick="copyToken()">复制</button>
+      </div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>访客 IP 白名单</h2>
+      <div class="muted" style="margin-bottom:8px">一行一个 IP。留空 = 不限制（任何人可尝试连接，最终由 PC 侧的设备认证把关）。</div>
+      <textarea id="allowIps" placeholder="1.2.3.4&#10;5.6.7.8"></textarea>
+      <div style="margin-top:10px;display:flex;gap:8px"><button class="primary" onclick="saveIps()">保存白名单</button><span class="muted" id="ipsHint" style="align-self:center"></span></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>日志（最近 120 行）</h2>
+      <pre id="logs">加载中…</pre>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+function fmtDur(sec) {
+  if (sec == null) return '—';
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  if (d > 0) return d + ' 天 ' + h + ' 小时';
+  if (h > 0) return h + ' 小时 ' + m + ' 分';
+  return m + ' 分 ' + (sec % 60) + ' 秒';
+}
+
+function dayClass(days) {
+  if (days == null) return 'idle';
+  if (days > 21) return 'ok';
+  if (days > 7) return 'warn';
+  return 'bad';
+}
+
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/** 相对时间：拿服务端 now 当基准，避免浏览器时钟偏差把「3 秒前」算成负数。 */
+function agoText(iso, nowMs) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!isFinite(t)) return '—';
+  const s = Math.max(0, Math.round((nowMs - t) / 1000));
+  if (s < 60) return s + ' 秒前';
+  if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+  if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+  return Math.floor(s / 86400) + ' 天前';
+}
+
+function renderAgents(hub, nowMs) {
+  const agents = (hub && hub.agents) || [];
+  const blocked = (hub && hub.blockedAgents) || [];
+  const esc2 = esc;
+
+  let html = '';
+  if (!agents.length) {
+    html = '<div class="empty">当前没有电脑连着这台中继。请在电脑上打开 DSH Desktop → 设置 → 手机访问 → 中继，确认已启用。</div>';
+  } else {
+    html += '<table><thead><tr>'
+      + '<th>名称</th><th>来源</th><th>已连接</th><th>最后活动</th><th>连接数</th><th></th>'
+      + '</tr></thead><tbody>';
+    for (const a of agents) {
+      const tags = (a.default ? '<span class="tag on">首选</span>' : '')
+        + (a.serving ? '<span class="tag serve">接流中</span>' : '')
+        + (a.stale ? '<span class="tag stale">无响应</span>' : '');
+      const isBlocked = blocked.indexOf(a.id) >= 0;
+      html += '<tr>'
+        + '<td class="name">' + esc2(a.id) + tags + '</td>'
+        + '<td class="time">' + esc2(a.remote || '—') + '</td>'
+        + '<td class="time">' + esc2(agoText(a.since, nowMs).replace('前', '')) + '</td>'
+        + '<td class="time">' + esc2(agoText(a.lastSeen, nowMs)) + '</td>'
+        + '<td>' + (a.streams || 0) + '</td>'
+        + '<td class="acts">'
+        + (a.default
+          ? '<button onclick="setDefault(\'\')">取消首选</button>'
+          : '<button onclick="setDefault(\'' + esc2(a.id) + '\')">设为首选</button>')
+        + '<button onclick="kickAgent(\'' + esc2(a.id) + '\')">断开</button>'
+        + (isBlocked
+          ? '<button class="primary" onclick="setBlocked(\'' + esc2(a.id) + '\', false)">解除禁止</button>'
+          : '<button onclick="setBlocked(\'' + esc2(a.id) + '\', true)">禁止接入</button>')
+        + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  }
+
+  // 被禁的机器不在线时不会出现在上表里，没有这一段就没法解禁
+  if (blocked.length) {
+    html += '<div class="muted" style="margin-top:12px">已禁止接入：'
+      + blocked.map((id) => '<code style="margin-left:6px">' + esc2(id) + '</code>'
+        + '<button style="height:24px;padding:0 10px;font-size:12px;margin-left:6px" '
+        + 'onclick="setBlocked(\'' + esc2(id) + '\', false)">解除</button>').join('')
+      + '</div>';
+  }
+  $('agentTable').innerHTML = html;
+}
+
+function render(s) {
+  $('ver').textContent = 'v' + (s.version || '?');
+  $('uptime').textContent = '已运行 ' + fmtDur(s.uptimeSec);
+
+  const nowMs = s.now ? new Date(s.now).getTime() : Date.now();
+  const agents = (s.hub && s.hub.agents) || [];
+  const serving = (s.hub && s.hub.serving) || '';
+  $('agents').innerHTML = '<span class="dot ' + (serving ? 'ok' : 'bad') + '"></span>'
+    + (serving || (agents.length ? '无响应' : '未连接'));
+  $('streams').textContent = s.hub.streams;
+  $('publicUrl').textContent = s.publicUrl || '—';
+  $('agentAddr').textContent = (s.listeners && s.listeners.agent) || '—';
+  $('visitorAddr').textContent = (s.listeners && s.listeners.visitor) || '—';
+  renderAgents(s.hub, nowMs);
+
+  const c = s.cert;
+  if (!c) {
+    $('certBody').innerHTML = '<div class="muted">本实例未启用 TLS（agent / visitor 都是明文）。</div>';
+    $('renewBtn').disabled = true;
+  } else {
+    const d = c.daysLeft;
+    const cls = c.ready ? dayClass(d) : 'bad';
+    $('certBody').innerHTML =
+      '<div class="row"><span>域名</span><b>' + (c.domain || '—') + '</b></div>' +
+      '<div class="row"><span>状态</span><b><span class="dot ' + cls + '"></span>' + (c.ready ? (d + ' 天后到期') : '未就绪') + '</b></div>' +
+      '<div class="row"><span>签发者</span><span class="muted">' + (c.issuer || '—') + '</span></div>' +
+      '<div class="row"><span>到期</span><span class="muted">' + (c.notAfter ? new Date(c.notAfter).toLocaleString() : '—') + '</span></div>' +
+      '<div class="row"><span>来源</span><span class="muted">' + (c.mode === 'acme' ? '内置 ACME（DNS-01）' : '外部证书文件') + '</span></div>' +
+      (c.lastError ? '<div class="row"><span>上次错误</span><span class="muted" style="color:var(--bad)">' + c.lastError + '</span></div>' : '');
+    $('renewBtn').disabled = false;
+  }
+
+  if (document.activeElement !== $('allowIps')) {
+    $('allowIps').value = (s.allowIps || []).join('\n');
+  }
+  $('logs').textContent = (s.logs || []).join('\n') || '暂无日志';
+  const pre = $('logs');
+  pre.scrollTop = pre.scrollHeight;
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/status', { credentials: 'same-origin' });
+    if (r.status === 401) { location.href = '/login'; return; }
+    render(await r.json());
+  } catch (e) { /* 瞬时失败忽略，下轮再试 */ }
+}
+
+async function renew() {
+  const b = $('renewBtn');
+  b.disabled = true; b.textContent = '续期中…';
+  try {
+    const r = await fetch('/api/cert/renew', { method: 'POST', credentials: 'same-origin' });
+    const j = await r.json();
+    toast(j.ok ? '✅ 续期完成' : '❌ ' + (j.error || '续期失败'));
+  } catch (e) { toast('❌ 请求失败'); }
+  b.disabled = false; b.textContent = '立即续期';
+  load();
+}
+
+// ---- Agent Token：按需拉取，默认打码 ----
+// 刻意不放进 3 秒轮询的 /api/status：那样等于每 3 秒把凭据在网络上刷一遍。
+let tokenCache = null;
+let tokenShown = false;
+
+async function loadToken() {
+  if (tokenCache !== null) return tokenCache;
+  try {
+    const r = await fetch('/api/token', { credentials: 'same-origin' });
+    if (r.status === 401) { location.href = '/login'; return null; }
+    const j = await r.json();
+    tokenCache = j.set ? j.token : '';
+    return tokenCache;
+  } catch (e) { toast('❌ 读取 Token 失败'); return null; }
+}
+
+async function revealToken() {
+  const v = await loadToken();
+  if (v === null) return;
+  $('tokenValue').textContent = v || '（未配置）';
+  $('tokenToggle').textContent = '隐藏';
+  tokenShown = true;
+}
+
+function hideToken() {
+  $('tokenValue').textContent = '••••••••••••••••••••••••';
+  $('tokenToggle').textContent = '显示';
+  tokenShown = false;
+}
+
+function toggleToken() { tokenShown ? hideToken() : revealToken(); }
+
+async function copyToken() {
+  const v = await loadToken();
+  if (v === null) return;
+  if (!v) { toast('服务端未配置 Token'); return; }
+  try {
+    await navigator.clipboard.writeText(v);
+    toast('✅ Token 已复制');
+  } catch (e) {
+    // 非安全上下文或权限被拒：退回到手动选中，别让用户不知道怎么办
+    window.getSelection().selectAllChildren($('tokenValue'));
+    toast('复制被拒，已选中文本，请按 Ctrl/Cmd+C');
+  }
+}
+
+async function saveIps() {
+  const ips = $('allowIps').value.split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/allow-ips', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ips }),
+    });
+    const j = await r.json();
+    toast(j.ok ? '✅ 白名单已保存' : '❌ ' + (j.error || '保存失败'));
+  } catch (e) { toast('❌ 请求失败'); }
+  load();
+}
+
+// ---- 多机管理 ----
+async function agentAction(path, body, okMsg) {
+  try {
+    const r = await fetch(path, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    toast(r.ok && j.ok ? okMsg : '❌ ' + (j.error || '操作失败'));
+  } catch (e) { toast('❌ 请求失败'); }
+  load();
+}
+
+function setDefault(id) {
+  agentAction('/api/agent/default', { id }, id ? '✅ 已设为首选：' + id : '✅ 已取消首选');
+}
+
+function kickAgent(id) {
+  // 说明清楚「它会回来」：这个按钮是排障用的（踢掉一条卡住的控制连接），
+  // 不是把人拉黑——拉黑是右边那个按钮。
+  agentAction('/api/agent/kick', { id }, '✅ 已断开 ' + id + '，它会自动重连');
+}
+
+function setBlocked(id, blocked) {
+  if (blocked && !confirm('禁止「' + id + '」接入？\n\n它会被立刻断开，并且之后每次连接都会被中继拒绝，'
+    + '直到你在这里解除禁止。')) return;
+  agentAction('/api/agent/block', { id, blocked },
+    blocked ? '✅ 已禁止接入：' + id : '✅ 已解除禁止：' + id);
+}
+
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>

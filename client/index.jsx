@@ -1,4 +1,4 @@
-// dsh-pocket 网页客户端：
+// dsh-pocket-relay 网页客户端：
 //   1. 设置页签「手机访问」（局域网/公网二维码 + 更新/重启提示）
 //   2. 移动端适配（移植自 MIT 项目 dsh-web-mobile，见 client/mobile/LICENSE.dsh-web-mobile）
 //
@@ -13,7 +13,7 @@ import { POCKET_RPC_CHANNEL, POCKET_ENDPOINTS, redactStatus, compareVersions } f
 import { mobileApply } from './mobile/mobile-apply.tsx';
 import { NS as POCKET_NS, zh as POCKET_ZH, en as POCKET_EN } from './pocket-locales.js';
 
-const name = 'dsh-pocket';
+const name = 'dsh-pocket-relay';
 const inject = ['slots', 'connection', 'layout', 'locale', 'sessionLogDownload'];
 
 // 词典在 pocket-locales.js；这里只做「取 key → 替换 {占位符} → 字符串」。
@@ -42,6 +42,13 @@ const styles = {
   btn: { font: 'inherit', cursor: 'pointer', border: '1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))', background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)', height: 36, padding: '0 16px', borderRadius: 999, fontSize: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
   qr: { width: 220, height: 220, borderRadius: 10, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', margin: '8px 0' },
   warn: { color: 'var(--dsw-alias-state-warn-primary,#b45309)', fontSize: 12, lineHeight: 1.5 },
+  // 表单控件（中继配置 / 设备命名）：与既有下拉框同一套视觉
+  input: { font: 'inherit', height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)', fontSize: 12, boxSizing: 'border-box' },
+  field: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', margin: '6px 0' },
+  fieldLabel: { flexShrink: 0, width: 96, textAlign: 'right' },
+  // 状态点：靠颜色一眼看出通没通
+  dot: (bg) => ({ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: bg, marginRight: 6, flexShrink: 0 }),
+  deviceRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '7px 0', borderTop: '1px solid var(--dsw-alias-border-l2,#f0f0f2)', fontSize: 12 },
 };
 
 function PocketSettingsTab({ rpcCall, t }) {
@@ -109,7 +116,7 @@ function PocketSettingsTab({ rpcCall, t }) {
     const check = async () => {
       try {
         const v = await call(POCKET_ENDPOINTS.version, {});
-        const meta = await (await fetch('https://registry.npmjs.org/dsh-pocket/latest', { cache: 'no-store' })).json();
+        const meta = await (await fetch('https://registry.npmjs.org/dsh-pocket-relay/latest', { cache: 'no-store' })).json();
         if (!alive) return;
         const latest = typeof meta?.version === 'string' ? meta.version : null;
         if (latest && v.current && compareVersions(latest, v.current) > 0) {
@@ -282,6 +289,132 @@ function PocketSettingsTab({ rpcCall, t }) {
     }
   };
 
+  // ---------- 中继（自建服务器） ----------
+  // relayForm：编辑态表单；null = 未编辑（显示当前配置摘要）。
+  // token 留空表示「保持不变」——界面不回显已存 token，用户没改就不该覆盖。
+  const [relayForm, setRelayForm] = useState(null);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const [consentChecked, setConsentChecked] = useState(false);
+
+  const saveRelay = async (extra = {}) => {
+    const f = relayForm;
+    // 只在**真的在编辑表单**时才发这些字段。否则（比如用户只是点开关、被弹窗
+    // 要求先同意声明）发一组空值会把已存的配置抹掉。
+    const payload = f
+      ? {
+        host: f.host ?? '',
+        port: f.port ?? '',
+        publicUrl: f.publicUrl ?? '',
+        token: f.token || undefined,   // 留空不覆盖
+        agentId: f.agentId ?? '',      // 留空 = 回到「按主机名派生」
+        tls: f.tls === true,
+        allowInsecure: f.allowInsecure === true,
+      }
+      : {};
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.relaySetConfig, { ...payload, ...extra }));
+      if (f) setRelayForm(null);
+      showToast(t('relaySaved'));
+      void loadDevices();
+    } catch (err) {
+      // 用户没勾知情同意就点保存启用：弹一次声明，而不是丢个红字
+      if (/安全声明/.test(String(err.message))) {
+        setConsentChecked(false);
+        setConsentOpen(true);
+      } else {
+        setError(err.message);
+        showToast(fmt(t, 'relaySaveFailed', { err: errText(err.message) }));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 知情同意只弹一次：勾选后连同「启用」一起提交（服务端要求两者同时成立）
+  const confirmConsent = () => {
+    if (!consentChecked) return;
+    setConsentOpen(false);
+    void saveRelay({ consent: true, enabled: true });
+  };
+
+  // 常开开关 / 暂停：暂停只断中继，局域网与公网通道不受影响
+  const toggleRelay = async (on) => {
+    setBusy(true);
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.relaySetEnabled, { on }));
+      showToast(on ? t('relaySaved') : t('relayStateStopped'));
+    } catch (err) {
+      if (/安全声明/.test(String(err.message))) {
+        setConsentChecked(false);
+        setConsentOpen(true);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------- 设备管理 ----------
+  const [devices, setDevices] = useState({ devices: [], pending: [], status: null });
+  const [pairing, setPairing] = useState(null);   // { code, pairUrl, expiresAt }
+  const [deviceName, setDeviceName] = useState('');
+
+  const loadDevices = async () => {
+    try {
+      const r = await call(POCKET_ENDPOINTS.deviceList, {});
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+    } catch { /* 未启用设备认证时静默 */ }
+  };
+
+  // 设备列表只在「中继已启用」时轮询：手机提交配对后要能自动出现在待批准里，
+  // 不轮询的话用户得手动刷新才看得到。
+  useEffect(() => {
+    if (status?.relay?.enabled !== true) return undefined;
+    void loadDevices();
+    const timer = setInterval(loadDevices, 3000);
+    return () => clearInterval(timer);
+  }, [status?.relay?.enabled]);
+
+  const createPairing = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await call(POCKET_ENDPOINTS.devicePairingCreate, { name: deviceName || undefined });
+      setPairing({ code: r.code, pairUrl: r.pairUrl, pairQr: r.pairQr, expiresAt: r.expiresAt });
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+      setDeviceName('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelPairing = async () => {
+    try {
+      const r = await call(POCKET_ENDPOINTS.devicePairingCancel, {});
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+    } catch { /* 忽略 */ }
+    setPairing(null);
+  };
+
+  const deviceAction = async (endpoint, id, doneKey) => {
+    try {
+      const r = await call(endpoint, { id });
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+      showToast(t(doneKey));
+      // 批准之后配对码就没用了，收起二维码面板
+      if (endpoint === POCKET_ENDPOINTS.deviceApprove) setPairing(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const [revokeTarget, setRevokeTarget] = useState(null);
+
   // 自定义访问密码（issue #33）：公网/局域网各自设固定 8 位密码（英文字母大小写或数字）；自定义后公网不再自动轮换。
   // customPin: { which: 'public'|'lan', value, err } | null —— 正在输入自定义密码的区块
   const [customPin, setCustomPin] = useState(null);
@@ -379,7 +512,7 @@ function PocketSettingsTab({ rpcCall, t }) {
       h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary,#8b93a1)', textAlign: 'right' } },
         h('div', { style: { whiteSpace: 'nowrap' } }, t('developer')),
         h('div', { style: { whiteSpace: 'nowrap' } }, t('starAsk')),
-        h('a', { href: 'https://github.com/shaobeichen/dsh-pocket', target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary,#4f6ef7)', fontSize: 12, lineHeight: 1.6, textDecoration: 'underline' } },
+        h('a', { href: 'https://github.com/kinderao/dsh-pocket-relay', target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary,#4f6ef7)', fontSize: 12, lineHeight: 1.6, textDecoration: 'underline' } },
           t('starCta')),
       ),
     ),
@@ -557,6 +690,155 @@ function PocketSettingsTab({ rpcCall, t }) {
 
     error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 8 } }, `❌ ${errText(error)}`) : null,
 
+    // ---------- 中继（自建服务器）+ 设备管理 ----------
+    (() => {
+      const relay = status?.relay ?? { enabled: false, consent: false, host: '', port: 0, tls: false, allowInsecure: false, tokenSet: false, publicUrl: '' };
+      const rs = status?.relayState ?? { phase: 'idle' };
+      const configured = Boolean(relay.host && relay.port && relay.tokenSet && relay.publicUrl);
+      const on = relay.enabled === true;
+      // 状态文案与颜色：一眼看出通没通（常开之后界面是唯一的信息来源）
+      const stateColor = !on ? 'var(--dsw-alias-label-tertiary,#8b93a1)'
+        : rs.phase === 'online' ? 'var(--dsw-alias-state-success-primary,#16a34a)'
+          : rs.phase === 'error' ? 'var(--dsw-alias-state-error-primary,#dc2626)'
+            : 'var(--dsw-alias-state-warn-primary,#b45309)';
+      const stateText = !on ? t('relayStateIdle')
+        : rs.phase === 'online' ? t('relayStateOnline')
+          : rs.phase === 'error' ? t('relayStateError')
+            : t('relayStateConnecting');
+      const f = relayForm;
+
+      const input = (key, props) => h('input', {
+        style: { ...styles.input, flex: 1, minWidth: 0 },
+        value: (f?.[key] ?? '') === null ? '' : String(f?.[key] ?? ''),
+        onChange: (e) => setRelayForm((c) => ({ ...(c ?? {}), [key]: e.target.value, err: null })),
+        ...props,
+      });
+
+      return h('div', { style: styles.block },
+        // 标题行：名称 + 状态点 + 常开开关
+        h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+          h('span', { style: { display: 'inline-flex', alignItems: 'center', fontWeight: 600, fontSize: 13 } },
+            h('span', { style: styles.dot(stateColor) }),
+            t('relayTitle')),
+          h('div', { style: { display: 'inline-flex', alignItems: 'center', gap: 8 } },
+            h('span', { style: { fontSize: 12, color: stateColor, whiteSpace: 'nowrap' } }, stateText),
+            configured ? Switch(on, () => toggleRelay(!on)) : null),
+        ),
+        h('div', { style: { ...styles.muted, marginTop: 6 } }, t('relayIntro')),
+
+        // 运行信息：重连次数 / 在途连接 / 本机在 relay 上的名字（多机排障要看的三个数）
+        on && rs.phase !== 'idle'
+          ? h('div', { style: { ...styles.muted, marginTop: 4 } },
+            `${fmt(t, 'relayReconnects', { n: rs.reconnects ?? 0 })} · ${fmt(t, 'relayStreams', { n: rs.streams ?? 0 })}`
+            + ` · ${fmt(t, 'relayThisPc', { id: rs.agentId || relay.agentId || '—' })}`
+            + (rs.phase === 'error' && rs.detail ? ` · ${errText(rs.detail)}` : ''))
+          : null,
+
+        // 配置摘要（非编辑态）
+        f === null
+          ? h('div', { style: { ...styles.muted, marginTop: 6 } },
+            configured
+              ? `${relay.host}:${relay.port} · ${relay.publicUrl} · Token ${relay.tokenSet ? t('relayTokenSet') : t('relayTokenMissing')}`
+              : t('relayNeedCfg'),
+            h('button', {
+              style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, marginLeft: 8 },
+              onClick: () => setRelayForm({ ...relay, token: '', err: null }),
+            }, configured ? t('namedEdit') : t('relaySave')))
+          : null,
+
+        // 配置表单
+        f !== null
+          ? h('div', { style: { marginTop: 8 } },
+            h('div', { style: styles.field },
+              h('span', { style: styles.fieldLabel }, t('relayHostLabel')),
+              input('host', { placeholder: t('relayHostPh'), autoFocus: true })),
+            h('div', { style: styles.field },
+              h('span', { style: styles.fieldLabel }, t('relayPortLabel')),
+              input('port', { placeholder: '8444', inputMode: 'numeric' })),
+            h('div', { style: styles.field },
+              h('span', { style: styles.fieldLabel }, t('relayPublicUrlLabel')),
+              input('publicUrl', { placeholder: t('relayPublicUrlPh') })),
+            h('div', { style: { ...styles.muted, margin: '-2px 0 6px 104px' } }, t('relayPublicUrlHint')),
+            h('div', { style: styles.field },
+              h('span', { style: styles.fieldLabel }, t('relayTokenLabel')),
+              input('token', { type: 'password', placeholder: relay.tokenSet ? t('relayTokenSet') : '' })),
+            h('div', { style: styles.field },
+              h('span', { style: styles.fieldLabel }, t('relayAgentIdLabel')),
+              input('agentId', { placeholder: t('relayAgentIdPh') })),
+            h('div', { style: { ...styles.muted, margin: '-2px 0 6px 104px' } }, t('relayAgentIdHint')),
+            h('label', { style: { ...styles.field, cursor: 'pointer' } },
+              h('span', { style: styles.fieldLabel }, t('relayTlsLabel')),
+              h('input', { type: 'checkbox', checked: f.tls === true, onChange: (e) => setRelayForm((c) => ({ ...c, tls: e.target.checked })) })),
+            h('div', { style: { ...styles.muted, margin: '-2px 0 6px 104px' } }, t('relayTlsHint')),
+            f.tls === true
+              ? h('div', null,
+                h('label', { style: { ...styles.field, cursor: 'pointer' } },
+                  h('span', { style: styles.fieldLabel }, t('relayInsecureLabel')),
+                  h('input', { type: 'checkbox', checked: f.allowInsecure === true, onChange: (e) => setRelayForm((c) => ({ ...c, allowInsecure: e.target.checked })) })),
+                h('div', { style: { ...styles.muted, margin: '-2px 0 6px 104px' } }, t('relayInsecureHint')))
+              : null,
+            h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
+              h('button', { style: styles.primary, disabled: busy, onClick: () => saveRelay() }, busy ? t('relaySaving') : t('relaySave')),
+              h('button', { style: styles.btn, onClick: () => setRelayForm(null) }, t('cancel'))))
+          : null,
+
+        // 对外地址二维码（配置完整时一直显示，手机扫了就能存下来）
+        configured && relay.publicUrl
+          ? h('div', { style: { marginTop: 10, background: 'var(--dsw-alias-bg-layer-2,#f3f4f6)', borderRadius: 10, padding: '10px 12px', textAlign: 'center' } },
+            status?.relayQr ? h('img', { src: status.relayQr, alt: 'QR', style: styles.qr }) : null,
+            h('div', { style: styles.code }, relay.publicUrl),
+            h('div', { style: styles.muted }, t('relayQrHint')))
+          : null,
+
+        // ----- 设备管理 -----
+        configured
+          ? h('div', { style: { marginTop: 12, borderTop: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 10 } },
+            h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+              h('span', { style: { fontWeight: 600, fontSize: 13 } },
+                `${t('deviceTitle')} · ${fmt(t, 'deviceCount', { n: devices.devices.length })}`),
+              h('button', { style: styles.btn, disabled: busy || pairing !== null, onClick: createPairing },
+                busy ? t('deviceAdding') : t('deviceAdd'))),
+            h('div', { style: { ...styles.muted, marginTop: 4 } }, t('deviceIntro')),
+
+            // 配对二维码面板
+            pairing
+              ? h('div', { style: { marginTop: 8, background: 'var(--dsw-alias-bg-layer-2,#f3f4f6)', borderRadius: 10, padding: '10px 12px', textAlign: 'center' } },
+                h('div', { style: { fontWeight: 600, fontSize: 13 } }, t('devicePairTitle')),
+                pairing.pairQr ? h('img', { src: pairing.pairQr, alt: 'Pair QR', style: styles.qr }) : null,
+                h('div', { style: styles.code }, pairing.pairUrl),
+                h('div', { style: styles.muted }, t('devicePairHint')),
+                h('div', { style: { ...styles.muted, marginTop: 4 } },
+                  fmt(t, 'devicePairExpire', { time: new Date(pairing.expiresAt).toLocaleTimeString() })),
+                h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, marginTop: 6 }, onClick: cancelPairing }, t('devicePairCancel')))
+              : null,
+
+            // 待批准
+            devices.pending.length > 0
+              ? h('div', { style: { marginTop: 8 } },
+                h('div', { style: { fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-state-warn-primary,#b45309)' } }, t('devicePendingTitle')),
+                devices.pending.map((d) => h('div', { key: d.id, style: styles.deviceRow },
+                  h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, d.name),
+                  h('span', { style: { display: 'inline-flex', gap: 6, flexShrink: 0 } },
+                    h('button', { style: { ...styles.primary, height: 24, padding: '0 10px', fontSize: 12 }, onClick: () => deviceAction(POCKET_ENDPOINTS.deviceApprove, d.id, 'deviceApprovedDone') }, t('deviceApprove')),
+                    h('button', { style: { ...styles.btn, height: 24, padding: '0 10px', fontSize: 12 }, onClick: () => deviceAction(POCKET_ENDPOINTS.deviceReject, d.id, 'deviceRejectedDone') }, t('deviceReject'))))))
+              : null,
+
+            // 已批准
+            devices.devices.length === 0
+              ? h('div', { style: { ...styles.muted, marginTop: 6 } }, t('deviceNone'))
+              : devices.devices.map((d) => h('div', { key: d.id, style: styles.deviceRow },
+                h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                  d.name,
+                  h('span', { style: { ...styles.muted, marginLeft: 6 } },
+                    `${t('deviceLastLogin')}: ${d.lastLoginAt ? new Date(d.lastLoginAt).toLocaleString() : t('deviceNever')}`)),
+                h('button', {
+                  style: { ...styles.btn, height: 24, padding: '0 10px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)', flexShrink: 0 },
+                  onClick: () => setRevokeTarget(d),
+                }, t('deviceRevoke')))))
+          : null,
+      );
+    })(),
+
     // 恢复出厂设置：设置出问题时的临时兜底（最底部，避免误触）
     h('div', { style: styles.block },
       h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
@@ -616,9 +898,41 @@ function PocketSettingsTab({ rpcCall, t }) {
       ),
     ) : null,
 
+    // 常开知情同意（一次性）：相对 cloudflared「每次开启都弹」，这里刻意的放宽——
+    // 常开的意义就是不用每次点，所以同意改为配置阶段勾一次并由服务端强制校验。
+    consentOpen ? h('div', { style: { position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 } },
+      h('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#fff)', borderRadius: 12, maxWidth: 440, width: '100%', padding: '20px 22px', boxShadow: '0 8px 32px rgba(0,0,0,.18)', maxHeight: '85vh', overflowY: 'auto' } },
+        h('div', { style: { fontWeight: 600, fontSize: 15, color: 'var(--dsw-alias-state-warn-primary,#b45309)', marginBottom: 10 } }, t('relayConsentTitle')),
+        h('div', { style: { fontSize: 13, lineHeight: 1.75, color: 'var(--dsw-alias-label-primary,inherit)', whiteSpace: 'pre-line' } }, t('relayConsentBody')),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 13, cursor: 'pointer' } },
+          h('input', { type: 'checkbox', checked: consentChecked, onChange: (e) => setConsentChecked(e.target.checked), style: { width: 16, height: 16 } }),
+          t('relayConsentAgree')),
+        h('div', { style: { display: 'flex', gap: 8, marginTop: 16 } },
+          h('button', { style: { ...styles.btn, flex: 1 }, onClick: () => setConsentOpen(false) }, t('cancel')),
+          h('button', {
+            style: { ...styles.primary, flex: 1, opacity: consentChecked ? 1 : .5 },
+            disabled: !consentChecked,
+            onClick: confirmConsent,
+          }, t('relayConsentAgree'))),
+        !consentChecked ? h('div', { style: { marginTop: 8, fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' } }, t('relayConsentHint')) : null),
+    ) : null,
+
+    // 撤销设备确认（撤销 = 那台手机要重新配对，不可轻点）
+    revokeTarget ? h('div', { style: { position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 } },
+      h('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#fff)', borderRadius: 12, maxWidth: 400, width: '100%', padding: '20px 22px', boxShadow: '0 8px 32px rgba(0,0,0,.18)' } },
+        h('div', { style: { fontWeight: 600, fontSize: 15, color: 'var(--dsw-alias-state-error-primary,#dc2626)', marginBottom: 10 } }, `${t('deviceRevoke')} · ${revokeTarget.name}`),
+        h('div', { style: { fontSize: 13, lineHeight: 1.7, color: 'var(--dsw-alias-label-primary,inherit)' } }, t('deviceRevokeConfirm')),
+        h('div', { style: { display: 'flex', gap: 8, marginTop: 16 } },
+          h('button', { style: { ...styles.btn, flex: 1 }, onClick: () => setRevokeTarget(null) }, t('cancel')),
+          h('button', {
+            style: { ...styles.primary, flex: 1, background: 'var(--dsw-alias-state-error-primary,#dc2626)' },
+            onClick: () => { const d = revokeTarget; setRevokeTarget(null); void deviceAction(POCKET_ENDPOINTS.deviceRevoke, d.id, 'deviceRevokeDone'); },
+          }, t('deviceRevoke')))),
+    ) : null,
+
     // 页面最底部：反馈入口
     h('div', { style: { ...styles.block, textAlign: 'center' } },
-      h('a', { href: 'https://github.com/shaobeichen/dsh-pocket/issues', target: '_blank', rel: 'noreferrer', style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', textDecoration: 'none' } },
+      h('a', { href: 'https://github.com/kinderao/dsh-pocket-relay/issues', target: '_blank', rel: 'noreferrer', style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', textDecoration: 'none' } },
         t('feedback')),
     ),
   );

@@ -55,6 +55,18 @@ var POCKET_ENDPOINTS = Object.freeze({
   lanSetEnabled: "lan.setEnabled",
   pinSetCustom: "pin.setCustom",
   pocketReset: "pocket.reset",
+  // 自建中继通道（替代 cloudflared 的传输层）。配置好即常开，无需手动开启。
+  relaySetConfig: "relay.setConfig",
+  relaySetEnabled: "relay.setEnabled",
+  // 设备管理（设备认证）：生成配对码、批准/拒绝/撤销设备。
+  // 这些端点只对本机 loopback 开放——代理层会拒绝非本机来源调 /dsh-pocket（白名单除外），
+  // 所以「已通过设备认证的手机」也拿不到它们，见 lib/proxy.mjs。
+  deviceList: "device.list",
+  devicePairingCreate: "device.pairing.create",
+  devicePairingCancel: "device.pairing.cancel",
+  deviceApprove: "device.approve",
+  deviceReject: "device.reject",
+  deviceRevoke: "device.revoke",
   // 移动端「复制文件内容」（issue #17）：手机经此 RPC 让主机读取文件正文，
   // 再写入剪贴板——因为手机无法直接打开电脑上的文件。
   fileRead: "pocket.fileRead"
@@ -101,7 +113,10 @@ function redactStatus(s) {
     tunnelQr: s?.tunnelQr ?? null,
     tunnelState: s?.tunnelState ?? { phase: "idle" },
     tunnelConfig: s?.tunnelConfig ?? { mode: "quick", hostname: "", tokenSet: false },
-    dshPort: s?.dshPort ?? null
+    dshPort: s?.dshPort ?? null,
+    relayRunning: s?.relayRunning === true,
+    relayState: s?.relayState ?? { phase: "idle" },
+    relayQr: s?.relayQr ?? null
   };
 }
 
@@ -1799,8 +1814,8 @@ function mobileApply(ctx) {
   ctx.effect(() => {
     if (!narrow.matches) return () => {
     };
-    const PHRASES = ["加载提供方目录失败", "Settings are unavailable in this browser"];
-    const NOTICE = "手机上不支持模型设置，请去电脑端修改设置";
+    const PHRASES = ["\u52A0\u8F7D\u63D0\u4F9B\u65B9\u76EE\u5F55\u5931\u8D25", "Settings are unavailable in this browser"];
+    const NOTICE = "\u624B\u673A\u4E0A\u4E0D\u652F\u6301\u6A21\u578B\u8BBE\u7F6E\uFF0C\u8BF7\u53BB\u7535\u8111\u7AEF\u4FEE\u6539\u8BBE\u7F6E";
     const findDeepest = (el) => {
       let deepest = el;
       for (const child of el.querySelectorAll("*")) {
@@ -1821,9 +1836,7 @@ function mobileApply(ctx) {
     const observer = new MutationObserver(patch);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     patch();
-    return () => {
-      observer.disconnect();
-    };
+    return () => observer.disconnect();
   }, "dsh-mobile-nav: replace model-settings load error with mobile hint");
   ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
     name: "conversation.session.header.actions",
@@ -1861,7 +1874,7 @@ var zh2 = {
   "section": "\u624B\u673A\u8BBF\u95EE",
   "title": "\u{1F4F1} \u624B\u673A\u8BBF\u95EE",
   "subtitle": "\u624B\u673A\u626B\u7801\u6253\u5F00\u7684\u5C31\u662F\u7535\u8111\u4E0A\u7684\u8FD9\u4E2A\u754C\u9762\uFF0C\u5B9E\u65F6\u540C\u6B65",
-  "developer": "\u5F00\u53D1\u8005\uFF1A\u7A0B\u5E8F\u5458\u5C11\u5317\u6668",
+  "developer": "\u57FA\u4E8E dsh-pocket \u4E8C\u6B21\u5F00\u53D1\uFF08GPL-2.0\uFF09",
   "starAsk": "\u2B50 \u987A\u624B\u7559\u9897 Star\uFF0C\u4F5C\u8005\u80FD\u9AD8\u5174\u4E00\u6574\u5929",
   "starCta": "\u884C\uFF0C\u7ED9\u4F60\u4E00\u9897 Star",
   "restarted": "\u{1F504} \u5DF2\u91CD\u542F",
@@ -1880,7 +1893,7 @@ var zh2 = {
   "restartingDetail": "\u23F3 \u6B63\u5728\u91CD\u542F\u751F\u6548\uFF08\u901A\u5E38 10-30 \u79D2\uFF09\xB7 \u5DF2\u7B49\u5F85 {s} \u79D2",
   "updatedAutoDetail": "\u2705 \u5DF2\u66F4\u65B0\uFF0C\u6B63\u5728\u81EA\u52A8\u91CD\u542F\u751F\u6548\uFF0C\u8BF7\u7A0D\u5019\u5237\u65B0",
   "updatedRestartDetail": "\u2705 \u5DF2\u66F4\u65B0\uFF0C\u91CD\u542F dsh web \u751F\u6548",
-  "updateFailed": "\u274C \u5931\u8D25\uFF1A{err}\uFF08\u624B\u52A8\u66F4\u65B0\uFF1Adsh plugin --profile web update dsh-pocket --latest -w\uFF09",
+  "updateFailed": "\u274C \u5931\u8D25\uFF1A{err}\uFF08\u624B\u52A8\u66F4\u65B0\uFF1Adsh plugin --profile web update dsh-pocket-relay --latest -w\uFF09",
   "versionRange": "\u5F53\u524D v{cur} \u2192 \u6700\u65B0 v{latest}",
   "wanAccess": "\u516C\u7F51\u8BBF\u95EE",
   "pinLabel": "\u8BBF\u95EE\u5BC6\u7801",
@@ -1951,13 +1964,77 @@ var zh2 = {
   "slowHint": " \u2014 \u6709\u70B9\u4E45\uFF1F\u68C0\u67E5\u662F\u5426\u5F00\u7740\u4EE3\u7406/VPN\uFF08Clash TUN \u7B49\uFF09",
   "error": "\u274C \u5F00\u542F\u5931\u8D25\uFF1A{detail}\uFF08\u53EF\u91CD\u8BD5\uFF1B\u82E5\u662F\u4EE3\u7406/VPN \u95EE\u9898\u89C1 README \u6392\u969C\uFF09",
   "unknownError": "\u672A\u77E5\u9519\u8BEF",
-  "feedback": "\u6709\u95EE\u9898\uFF1F\u6B22\u8FCE\u5230 GitHub Issues \u53CD\u9988 \u{1F64F}"
+  "feedback": "\u6709\u95EE\u9898\uFF1F\u6B22\u8FCE\u5230 GitHub Issues \u53CD\u9988 \u{1F64F}",
+  // ---------- 中继（自建服务器） ----------
+  "relayTitle": "\u{1F6F0} \u4E2D\u7EE7\uFF08\u81EA\u5EFA\u670D\u52A1\u5668\uFF09",
+  "relayIntro": "\u7528\u81EA\u5DF1\u7684\u670D\u52A1\u5668\u4E2D\u8F6C\uFF0C\u5730\u5740\u56FA\u5B9A\u3001\u4E0D\u4F9D\u8D56\u7B2C\u4E09\u65B9\u3002\u914D\u7F6E\u597D\u5373\u5E38\u5F00\uFF1Adsh \u4E00\u8D77\u6765\u5C31\u5728\u7EBF\uFF0C\u4E0D\u7528\u6BCF\u6B21\u624B\u52A8\u5F00\u3002",
+  "relayStateOnline": "\u{1F7E2} \u5DF2\u8FDE\u63A5",
+  "relayStateConnecting": "\u{1F7E0} \u8FDE\u63A5\u4E2D\u2026",
+  "relayStateError": "\u{1F534} \u672A\u8FDE\u63A5",
+  "relayStateStopped": "\u26AA \u5DF2\u6682\u505C",
+  "relayStateIdle": "\u26AA \u672A\u542F\u7528",
+  "relayHostLabel": "\u670D\u52A1\u5668\u5730\u5740",
+  "relayHostPh": "relay.example.com",
+  "relayPortLabel": "agent \u7AEF\u53E3",
+  "relayPublicUrlLabel": "\u5BF9\u5916\u8BBF\u95EE\u5730\u5740",
+  "relayPublicUrlPh": "https://relay.example.com:8443",
+  "relayPublicUrlHint": "\u624B\u673A\u626B\u7801\u548C\u6536\u85CF\u7528\u8FD9\u4E2A\u5730\u5740\u3002relay \u81EA\u5DF1\u7EC8\u7ED3 TLS\uFF0C\u6240\u4EE5\u586B https:// \u52A0\u7AEF\u53E3\u3002",
+  "relayTokenLabel": "Token\uFF08\u7559\u7A7A = \u4FDD\u6301\u4E0D\u53D8\uFF09",
+  "relayTokenSet": "\u5DF2\u914D\u7F6E",
+  "relayTokenMissing": "\u672A\u914D\u7F6E",
+  "relayAgentIdLabel": "\u672C\u673A\u540D\u79F0",
+  "relayAgentIdPh": "\u7559\u7A7A = \u7528\u7535\u8111\u4E3B\u673A\u540D",
+  "relayAgentIdHint": "\u540C\u4E00\u53F0\u4E2D\u7EE7\u4E0A\u6302\u591A\u53F0\u7535\u8111\u65F6\u9760\u5B83\u533A\u5206\uFF08\u53EA\u5141\u8BB8\u5B57\u6BCD\u3001\u6570\u5B57\u3001- _ .\uFF09\u3002\u7559\u7A7A\u5C31\u7528\u4E3B\u673A\u540D\u2014\u2014\u540C\u4E00\u53F0\u4E2D\u7EE7\u4E0A\u591A\u53F0\u7535\u8111\u4E0D\u80FD\u540C\u540D\uFF0C\u5426\u5219\u4F1A\u4E92\u76F8\u9876\u4E0B\u7EBF\u3002",
+  "relayThisPc": "\u672C\u673A\u540D\u79F0\uFF1A{id}",
+  "relayTlsLabel": "agent \u901A\u9053\u4F7F\u7528 TLS",
+  "relayTlsHint": "agent \u901A\u9053\u627F\u8F7D\u4F60\u548C\u7535\u8111\u4E4B\u95F4\u7684\u5168\u90E8\u660E\u6587\u6D41\u91CF\uFF0C\u9664\u975E\u8D70 Tailscale/WireGuard \u5185\u7F51\uFF0C\u5426\u5219\u5EFA\u8BAE\u5F00\u542F\u3002",
+  "relayInsecureLabel": "\u5141\u8BB8\u81EA\u7B7E\u540D\u8BC1\u4E66",
+  "relayInsecureHint": "\u26A0\uFE0F \u7B49\u4E8E\u653E\u5F03\u4E2D\u95F4\u4EBA\u9632\u62A4\uFF0C\u4EC5\u5728\u5B8C\u5168\u53EF\u4FE1\u7684\u7F51\u7EDC\u91CC\u7528\u3002",
+  "relaySave": "\u4FDD\u5B58\u5E76\u8FDE\u63A5",
+  "relaySaving": "\u4FDD\u5B58\u4E2D\u2026",
+  "relaySaved": "\u2705 \u4E2D\u7EE7\u914D\u7F6E\u5DF2\u4FDD\u5B58",
+  "relaySaveFailed": "\u274C \u4FDD\u5B58\u5931\u8D25\uFF1A{err}",
+  "relayNeedCfg": "\u8BF7\u5148\u586B\u5199\u670D\u52A1\u5668\u5730\u5740\u3001agent \u7AEF\u53E3\u3001\u5BF9\u5916\u8BBF\u95EE\u5730\u5740\u548C Token",
+  "relayPause": "\u6682\u505C\u8FDC\u7A0B",
+  "relayResume": "\u6062\u590D\u8FDC\u7A0B",
+  "relayReconnects": "\u5DF2\u91CD\u8FDE {n} \u6B21",
+  "relayStreams": "\u8FDB\u884C\u4E2D\u7684\u8FDE\u63A5\uFF1A{n}",
+  "relayConsentTitle": "\u26A0\uFE0F \u5E38\u5F00\u8FDC\u7A0B\u8BBF\u95EE\u7684\u5B89\u5168\u58F0\u660E",
+  "relayConsentBody": "\u5F00\u542F\u540E\uFF0C\u53EA\u8981 dsh \u5728\u8FD0\u884C\uFF0C\u8FD9\u53F0\u7535\u8111\u5C31\u4F1A**\u957F\u671F**\u6302\u5728\u4E2D\u7EE7\u670D\u52A1\u5668\u4E0A\uFF0C\u4EFB\u4F55\u4EBA\u5728\u516C\u7F51\u4E0A\u90FD\u80FD\u5C1D\u8BD5\u8FDE\u63A5\u3002\n\n\u2460 \u8BF7\u786E\u8BA4\u5DF2\u8BBE\u7F6E\u8BBF\u95EE\u5BC6\u7801\u6216\u5B8C\u6210\u8BBE\u5907\u914D\u5BF9\uFF1B\n\u2461 \u4E2D\u7EE7\u901A\u9053\u4F7F\u7528\u8BBE\u5907\u8BA4\u8BC1\uFF1A\u6BCF\u53F0\u8BBE\u5907\u4E00\u4E2A\u72EC\u7ACB\u5BC6\u7801\uFF0C\u53EF\u5355\u72EC\u64A4\u9500\uFF1B\n\u2462 \u624B\u673A\u4E22\u5931\u8BF7\u5728\u7535\u8111\u4E0A\u300C\u64A4\u9500\u300D\u90A3\u53F0\u8BBE\u5907\uFF08\u4E0D\u662F\u6539\u5BC6\u7801\uFF09\uFF1B\n\u2463 \u516C\u53F8/\u6D89\u5BC6\u7F51\u7EDC\u8BF7\u5148\u786E\u8BA4\u5408\u89C4\u3002",
+  "relayConsentAgree": "\u6211\u5DF2\u77E5\u60C5\uFF0C\u540C\u610F\u5E38\u5F00",
+  "relayConsentHint": "\u8BF7\u5148\u52FE\u9009\u300C\u6211\u5DF2\u77E5\u60C5\u300D",
+  "relayQrHint": "\u624B\u673A\u7528\u8FD9\u4E2A\u5730\u5740\u8BBF\u95EE\uFF08\u9700\u5148\u5B8C\u6210\u914D\u5BF9\uFF09",
+  // ---------- 设备管理 ----------
+  "deviceTitle": "\u5DF2\u914D\u5BF9\u8BBE\u5907",
+  "deviceIntro": "\u4E2D\u7EE7\u901A\u9053\u7528\u8BBE\u5907\u8BA4\u8BC1\uFF1A\u6BCF\u53F0\u624B\u673A\u4E00\u4E2A\u72EC\u7ACB\u5BC6\u7801\uFF0C\u4E22\u4E86\u4E00\u53F0\u53EA\u64A4\u4E00\u53F0\u3002",
+  "deviceAdd": "\u6DFB\u52A0\u8BBE\u5907",
+  "deviceAdding": "\u751F\u6210\u4E2D\u2026",
+  "deviceNone": "\u8FD8\u6CA1\u6709\u5DF2\u914D\u5BF9\u7684\u8BBE\u5907",
+  "devicePendingTitle": "\u5F85\u6279\u51C6",
+  "devicePendingNone": "\u6CA1\u6709\u5F85\u6279\u51C6\u7684\u8BBE\u5907",
+  "deviceApprove": "\u6279\u51C6",
+  "deviceReject": "\u62D2\u7EDD",
+  "deviceRevoke": "\u64A4\u9500",
+  "deviceName": "\u540D\u79F0",
+  "deviceCreatedAt": "\u6DFB\u52A0\u65F6\u95F4",
+  "deviceLastLogin": "\u6700\u540E\u767B\u5F55",
+  "deviceNever": "\u4ECE\u672A\u767B\u5F55",
+  "devicePairTitle": "\u{1F4F1} \u914D\u5BF9\u4E8C\u7EF4\u7801",
+  "devicePairHint": "\u624B\u673A\u626B\u7801\u540E\u8BBE\u7F6E\u81EA\u5DF1\u7684\u8BBE\u5907\u5BC6\u7801\uFF0C\u518D\u56DE\u6765\u70B9\u300C\u6279\u51C6\u300D\u3002\u4E8C\u7EF4\u7801 5 \u5206\u949F\u5185\u6709\u6548\uFF0C\u4E14\u53EA\u80FD\u7528\u4E00\u6B21\u3002",
+  "devicePairExpire": "\u8FC7\u671F\u65F6\u95F4\uFF1A{time}",
+  "devicePairCancel": "\u53D6\u6D88\u914D\u5BF9",
+  "deviceRevokeConfirm": "\u64A4\u9500\u540E\u8BE5\u8BBE\u5907\u9700\u91CD\u65B0\u914D\u5BF9\u624D\u80FD\u8BBF\u95EE\uFF0C\u786E\u5B9A\u7EE7\u7EED\uFF1F",
+  "deviceRevokeDone": "\u2705 \u5DF2\u64A4\u9500\u8BE5\u8BBE\u5907",
+  "deviceApprovedDone": "\u2705 \u5DF2\u6279\u51C6\u8BE5\u8BBE\u5907",
+  "deviceRejectedDone": "\u2705 \u5DF2\u62D2\u7EDD\u8BE5\u8BBE\u5907",
+  "deviceNamePh": "\u5982\uFF1A\u6211\u7684 iPhone",
+  "deviceCount": "\u5DF2\u914D\u5BF9 {n} \u53F0"
 };
 var en2 = {
   "section": "Phone access",
   "title": "\u{1F4F1} Phone access",
   "subtitle": "The phone shows this exact screen, live",
-  "developer": "Developer: \u5C11\u5317\u6668 (shaobeichen)",
+  "developer": "Built on dsh-pocket (GPL-2.0)",
   "starAsk": "\u2B50 Drop a Star if it helped \u2014 it makes the author\u2019s day",
   "starCta": "\u2605 Give a Star",
   "restarted": "\u{1F504} Restarted",
@@ -1976,7 +2053,7 @@ var en2 = {
   "restartingDetail": "\u23F3 Restarting to apply (usually 10-30s) \xB7 {s}s elapsed",
   "updatedAutoDetail": "\u2705 Updated \u2014 auto-restarting in progress, refresh shortly",
   "updatedRestartDetail": "\u2705 Updated \u2014 restart dsh web to apply",
-  "updateFailed": "\u274C Failed: {err} (manual update: dsh plugin --profile web update dsh-pocket --latest -w)",
+  "updateFailed": "\u274C Failed: {err} (manual update: dsh plugin --profile web update dsh-pocket-relay --latest -w)",
   "versionRange": "Current v{cur} \u2192 latest v{latest}",
   "wanAccess": "Public access",
   "pinLabel": "Access PIN",
@@ -2047,11 +2124,75 @@ var en2 = {
   "slowHint": " \u2014 taking long? Check for a proxy/VPN (e.g., Clash TUN)",
   "error": "\u274C Failed to enable: {detail} (you can retry; for proxy/VPN issues see the README)",
   "unknownError": "unknown error",
-  "feedback": "\u{1F64F} Questions? Open an issue on GitHub"
+  "feedback": "\u{1F64F} Questions? Open an issue on GitHub",
+  // ---------- Relay (self-hosted server) ----------
+  "relayTitle": "\u{1F6F0} Relay (self-hosted)",
+  "relayIntro": "Route through your own server: fixed address, no third party. Once configured it stays on \u2014 as long as dsh runs, you are reachable.",
+  "relayStateOnline": "\u{1F7E2} Connected",
+  "relayStateConnecting": "\u{1F7E0} Connecting\u2026",
+  "relayStateError": "\u{1F534} Not connected",
+  "relayStateStopped": "\u26AA Paused",
+  "relayStateIdle": "\u26AA Not enabled",
+  "relayHostLabel": "Server address",
+  "relayHostPh": "relay.example.com",
+  "relayPortLabel": "Agent port",
+  "relayPublicUrlLabel": "Public URL",
+  "relayPublicUrlPh": "https://relay.example.com:8443",
+  "relayPublicUrlHint": "The phone scans/bookmarks this. The relay terminates TLS itself, so use https:// plus the port.",
+  "relayTokenLabel": "Token (blank = keep current)",
+  "relayTokenSet": "configured",
+  "relayTokenMissing": "not set",
+  "relayAgentIdLabel": "This PC name",
+  "relayAgentIdPh": "blank = computer hostname",
+  "relayAgentIdHint": "Distinguishes multiple PCs behind one relay (letters, digits, - _ . only). Blank uses the hostname \u2014 two PCs on one relay must not share a name, or they will keep kicking each other off.",
+  "relayThisPc": "This PC: {id}",
+  "relayTlsLabel": "Use TLS for the agent channel",
+  "relayTlsHint": "The agent channel carries all plaintext traffic between you and the PC. Keep it on unless you are on a Tailscale/WireGuard network.",
+  "relayInsecureLabel": "Allow self-signed certificate",
+  "relayInsecureHint": "\u26A0\uFE0F Gives up man-in-the-middle protection. Only on a fully trusted network.",
+  "relaySave": "Save & connect",
+  "relaySaving": "Saving\u2026",
+  "relaySaved": "\u2705 Relay settings saved",
+  "relaySaveFailed": "\u274C Save failed: {err}",
+  "relayNeedCfg": "Fill in the server address, agent port, public URL and token first",
+  "relayPause": "Pause remote",
+  "relayResume": "Resume remote",
+  "relayReconnects": "Reconnects: {n}",
+  "relayStreams": "Active connections: {n}",
+  "relayConsentTitle": "\u26A0\uFE0F Always-on remote access",
+  "relayConsentBody": "Once enabled, this computer stays reachable through the relay server for as long as dsh is running, and anyone on the internet can attempt to connect.\n\n\u2460 Make sure an access PIN is set or device pairing is complete;\n\u2461 The relay channel uses device auth: each device has its own password and can be revoked individually;\n\u2462 If a phone is lost, revoke THAT device on the computer (do not just change a password);\n\u2463 On a corporate/classified network, confirm compliance first.",
+  "relayConsentAgree": "I understand, enable always-on",
+  "relayConsentHint": 'Check "I understand" first',
+  "relayQrHint": "Open this address on your phone (pairing required first)",
+  // ---------- Device management ----------
+  "deviceTitle": "Paired devices",
+  "deviceIntro": "The relay channel uses device auth: each phone has its own password, so losing one only affects that one.",
+  "deviceAdd": "Add device",
+  "deviceAdding": "Generating\u2026",
+  "deviceNone": "No paired devices yet",
+  "devicePendingTitle": "Pending approval",
+  "devicePendingNone": "Nothing waiting for approval",
+  "deviceApprove": "Approve",
+  "deviceReject": "Reject",
+  "deviceRevoke": "Revoke",
+  "deviceName": "Name",
+  "deviceCreatedAt": "Added",
+  "deviceLastLogin": "Last login",
+  "deviceNever": "never",
+  "devicePairTitle": "\u{1F4F1} Pairing QR code",
+  "devicePairHint": "Scan on the phone, set its own device password, then come back and tap Approve. The code is valid for 5 minutes and single-use.",
+  "devicePairExpire": "Expires: {time}",
+  "devicePairCancel": "Cancel pairing",
+  "deviceRevokeConfirm": "The device will need to pair again to regain access. Continue?",
+  "deviceRevokeDone": "\u2705 Device revoked",
+  "deviceApprovedDone": "\u2705 Device approved",
+  "deviceRejectedDone": "\u2705 Device rejected",
+  "deviceNamePh": "e.g. My iPhone",
+  "deviceCount": "{n} paired"
 };
 
 // client/index.jsx
-var name = "dsh-pocket";
+var name = "dsh-pocket-relay";
 var inject = ["slots", "connection", "layout", "locale", "sessionLogDownload"];
 function fmt(t, key, vars) {
   let s = t(key);
@@ -2072,7 +2213,14 @@ var styles = {
   // 次级按钮：官方 outline/ghost 胶囊形
   btn: { font: "inherit", cursor: "pointer", border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))", background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", height: 36, padding: "0 16px", borderRadius: 999, fontSize: 13, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   qr: { width: 220, height: 220, borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", margin: "8px 0" },
-  warn: { color: "var(--dsw-alias-state-warn-primary,#b45309)", fontSize: 12, lineHeight: 1.5 }
+  warn: { color: "var(--dsw-alias-state-warn-primary,#b45309)", fontSize: 12, lineHeight: 1.5 },
+  // 表单控件（中继配置 / 设备命名）：与既有下拉框同一套视觉
+  input: { font: "inherit", height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2,#d1d5db)", background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", fontSize: 12, boxSizing: "border-box" },
+  field: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--dsw-alias-label-secondary,#6b7280)", margin: "6px 0" },
+  fieldLabel: { flexShrink: 0, width: 96, textAlign: "right" },
+  // 状态点：靠颜色一眼看出通没通
+  dot: (bg) => ({ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: bg, marginRight: 6, flexShrink: 0 }),
+  deviceRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 0", borderTop: "1px solid var(--dsw-alias-border-l2,#f0f0f2)", fontSize: 12 }
 };
 function PocketSettingsTab({ rpcCall, t }) {
   const [status, setStatus] = (0, import_react2.useState)(null);
@@ -2132,7 +2280,7 @@ function PocketSettingsTab({ rpcCall, t }) {
     const check = async () => {
       try {
         const v = await call(POCKET_ENDPOINTS.version, {});
-        const meta = await (await fetch("https://registry.npmjs.org/dsh-pocket/latest", { cache: "no-store" })).json();
+        const meta = await (await fetch("https://registry.npmjs.org/dsh-pocket-relay/latest", { cache: "no-store" })).json();
         if (!alive) return;
         const latest = typeof meta?.version === "string" ? meta.version : null;
         if (latest && v.current && compareVersions(latest, v.current) > 0) {
@@ -2289,6 +2437,111 @@ function PocketSettingsTab({ rpcCall, t }) {
       setError(err.message);
     }
   };
+  const [relayForm, setRelayForm] = (0, import_react2.useState)(null);
+  const [consentOpen, setConsentOpen] = (0, import_react2.useState)(false);
+  const [consentChecked, setConsentChecked] = (0, import_react2.useState)(false);
+  const saveRelay = async (extra = {}) => {
+    const f = relayForm;
+    const payload = f ? {
+      host: f.host ?? "",
+      port: f.port ?? "",
+      publicUrl: f.publicUrl ?? "",
+      token: f.token || void 0,
+      // 留空不覆盖
+      agentId: f.agentId ?? "",
+      // 留空 = 回到「按主机名派生」
+      tls: f.tls === true,
+      allowInsecure: f.allowInsecure === true
+    } : {};
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.relaySetConfig, { ...payload, ...extra }));
+      if (f) setRelayForm(null);
+      showToast(t("relaySaved"));
+      void loadDevices();
+    } catch (err) {
+      if (/安全声明/.test(String(err.message))) {
+        setConsentChecked(false);
+        setConsentOpen(true);
+      } else {
+        setError(err.message);
+        showToast(fmt(t, "relaySaveFailed", { err: errText(err.message) }));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmConsent = () => {
+    if (!consentChecked) return;
+    setConsentOpen(false);
+    void saveRelay({ consent: true, enabled: true });
+  };
+  const toggleRelay = async (on) => {
+    setBusy(true);
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.relaySetEnabled, { on }));
+      showToast(on ? t("relaySaved") : t("relayStateStopped"));
+    } catch (err) {
+      if (/安全声明/.test(String(err.message))) {
+        setConsentChecked(false);
+        setConsentOpen(true);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const [devices, setDevices] = (0, import_react2.useState)({ devices: [], pending: [], status: null });
+  const [pairing, setPairing] = (0, import_react2.useState)(null);
+  const [deviceName, setDeviceName] = (0, import_react2.useState)("");
+  const loadDevices = async () => {
+    try {
+      const r = await call(POCKET_ENDPOINTS.deviceList, {});
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+    } catch {
+    }
+  };
+  (0, import_react2.useEffect)(() => {
+    if (status?.relay?.enabled !== true) return void 0;
+    void loadDevices();
+    const timer = setInterval(loadDevices, 3e3);
+    return () => clearInterval(timer);
+  }, [status?.relay?.enabled]);
+  const createPairing = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await call(POCKET_ENDPOINTS.devicePairingCreate, { name: deviceName || void 0 });
+      setPairing({ code: r.code, pairUrl: r.pairUrl, pairQr: r.pairQr, expiresAt: r.expiresAt });
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+      setDeviceName("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const cancelPairing = async () => {
+    try {
+      const r = await call(POCKET_ENDPOINTS.devicePairingCancel, {});
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+    } catch {
+    }
+    setPairing(null);
+  };
+  const deviceAction = async (endpoint, id, doneKey) => {
+    try {
+      const r = await call(endpoint, { id });
+      setDevices({ devices: r.devices ?? [], pending: r.pending ?? [], status: r.status ?? null });
+      showToast(t(doneKey));
+      if (endpoint === POCKET_ENDPOINTS.deviceApprove) setPairing(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  const [revokeTarget, setRevokeTarget] = (0, import_react2.useState)(null);
   const [customPin, setCustomPin] = (0, import_react2.useState)(null);
   const saveCustomPin = async (which) => {
     try {
@@ -2402,7 +2655,7 @@ function PocketSettingsTab({ rpcCall, t }) {
         (0, import_react2.createElement)("div", { style: { whiteSpace: "nowrap" } }, t("starAsk")),
         (0, import_react2.createElement)(
           "a",
-          { href: "https://github.com/shaobeichen/dsh-pocket", target: "_blank", rel: "noreferrer", style: { color: "var(--dsw-alias-brand-primary,#4f6ef7)", fontSize: 12, lineHeight: 1.6, textDecoration: "underline" } },
+          { href: "https://github.com/kinderao/dsh-pocket-relay", target: "_blank", rel: "noreferrer", style: { color: "var(--dsw-alias-brand-primary,#4f6ef7)", fontSize: 12, lineHeight: 1.6, textDecoration: "underline" } },
           t("starCta")
         )
       )
@@ -2613,6 +2866,200 @@ function PocketSettingsTab({ rpcCall, t }) {
       ) : null
     ),
     error ? (0, import_react2.createElement)("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 8 } }, `\u274C ${errText(error)}`) : null,
+    // ---------- 中继（自建服务器）+ 设备管理 ----------
+    (() => {
+      const relay = status?.relay ?? { enabled: false, consent: false, host: "", port: 0, tls: false, allowInsecure: false, tokenSet: false, publicUrl: "" };
+      const rs = status?.relayState ?? { phase: "idle" };
+      const configured = Boolean(relay.host && relay.port && relay.tokenSet && relay.publicUrl);
+      const on = relay.enabled === true;
+      const stateColor = !on ? "var(--dsw-alias-label-tertiary,#8b93a1)" : rs.phase === "online" ? "var(--dsw-alias-state-success-primary,#16a34a)" : rs.phase === "error" ? "var(--dsw-alias-state-error-primary,#dc2626)" : "var(--dsw-alias-state-warn-primary,#b45309)";
+      const stateText = !on ? t("relayStateIdle") : rs.phase === "online" ? t("relayStateOnline") : rs.phase === "error" ? t("relayStateError") : t("relayStateConnecting");
+      const f = relayForm;
+      const input = (key, props) => (0, import_react2.createElement)("input", {
+        style: { ...styles.input, flex: 1, minWidth: 0 },
+        value: (f?.[key] ?? "") === null ? "" : String(f?.[key] ?? ""),
+        onChange: (e) => setRelayForm((c) => ({ ...c ?? {}, [key]: e.target.value, err: null })),
+        ...props
+      });
+      return (0, import_react2.createElement)(
+        "div",
+        { style: styles.block },
+        // 标题行：名称 + 状态点 + 常开开关
+        (0, import_react2.createElement)(
+          "div",
+          { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
+          (0, import_react2.createElement)(
+            "span",
+            { style: { display: "inline-flex", alignItems: "center", fontWeight: 600, fontSize: 13 } },
+            (0, import_react2.createElement)("span", { style: styles.dot(stateColor) }),
+            t("relayTitle")
+          ),
+          (0, import_react2.createElement)(
+            "div",
+            { style: { display: "inline-flex", alignItems: "center", gap: 8 } },
+            (0, import_react2.createElement)("span", { style: { fontSize: 12, color: stateColor, whiteSpace: "nowrap" } }, stateText),
+            configured ? Switch(on, () => toggleRelay(!on)) : null
+          )
+        ),
+        (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 6 } }, t("relayIntro")),
+        // 运行信息：重连次数 / 在途连接 / 本机在 relay 上的名字（多机排障要看的三个数）
+        on && rs.phase !== "idle" ? (0, import_react2.createElement)(
+          "div",
+          { style: { ...styles.muted, marginTop: 4 } },
+          `${fmt(t, "relayReconnects", { n: rs.reconnects ?? 0 })} \xB7 ${fmt(t, "relayStreams", { n: rs.streams ?? 0 })} \xB7 ${fmt(t, "relayThisPc", { id: rs.agentId || relay.agentId || "\u2014" })}` + (rs.phase === "error" && rs.detail ? ` \xB7 ${errText(rs.detail)}` : "")
+        ) : null,
+        // 配置摘要（非编辑态）
+        f === null ? (0, import_react2.createElement)(
+          "div",
+          { style: { ...styles.muted, marginTop: 6 } },
+          configured ? `${relay.host}:${relay.port} \xB7 ${relay.publicUrl} \xB7 Token ${relay.tokenSet ? t("relayTokenSet") : t("relayTokenMissing")}` : t("relayNeedCfg"),
+          (0, import_react2.createElement)("button", {
+            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12, marginLeft: 8 },
+            onClick: () => setRelayForm({ ...relay, token: "", err: null })
+          }, configured ? t("namedEdit") : t("relaySave"))
+        ) : null,
+        // 配置表单
+        f !== null ? (0, import_react2.createElement)(
+          "div",
+          { style: { marginTop: 8 } },
+          (0, import_react2.createElement)(
+            "div",
+            { style: styles.field },
+            (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayHostLabel")),
+            input("host", { placeholder: t("relayHostPh"), autoFocus: true })
+          ),
+          (0, import_react2.createElement)(
+            "div",
+            { style: styles.field },
+            (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayPortLabel")),
+            input("port", { placeholder: "8444", inputMode: "numeric" })
+          ),
+          (0, import_react2.createElement)(
+            "div",
+            { style: styles.field },
+            (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayPublicUrlLabel")),
+            input("publicUrl", { placeholder: t("relayPublicUrlPh") })
+          ),
+          (0, import_react2.createElement)("div", { style: { ...styles.muted, margin: "-2px 0 6px 104px" } }, t("relayPublicUrlHint")),
+          (0, import_react2.createElement)(
+            "div",
+            { style: styles.field },
+            (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayTokenLabel")),
+            input("token", { type: "password", placeholder: relay.tokenSet ? t("relayTokenSet") : "" })
+          ),
+          (0, import_react2.createElement)(
+            "div",
+            { style: styles.field },
+            (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayAgentIdLabel")),
+            input("agentId", { placeholder: t("relayAgentIdPh") })
+          ),
+          (0, import_react2.createElement)("div", { style: { ...styles.muted, margin: "-2px 0 6px 104px" } }, t("relayAgentIdHint")),
+          (0, import_react2.createElement)(
+            "label",
+            { style: { ...styles.field, cursor: "pointer" } },
+            (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayTlsLabel")),
+            (0, import_react2.createElement)("input", { type: "checkbox", checked: f.tls === true, onChange: (e) => setRelayForm((c) => ({ ...c, tls: e.target.checked })) })
+          ),
+          (0, import_react2.createElement)("div", { style: { ...styles.muted, margin: "-2px 0 6px 104px" } }, t("relayTlsHint")),
+          f.tls === true ? (0, import_react2.createElement)(
+            "div",
+            null,
+            (0, import_react2.createElement)(
+              "label",
+              { style: { ...styles.field, cursor: "pointer" } },
+              (0, import_react2.createElement)("span", { style: styles.fieldLabel }, t("relayInsecureLabel")),
+              (0, import_react2.createElement)("input", { type: "checkbox", checked: f.allowInsecure === true, onChange: (e) => setRelayForm((c) => ({ ...c, allowInsecure: e.target.checked })) })
+            ),
+            (0, import_react2.createElement)("div", { style: { ...styles.muted, margin: "-2px 0 6px 104px" } }, t("relayInsecureHint"))
+          ) : null,
+          (0, import_react2.createElement)(
+            "div",
+            { style: { display: "flex", gap: 8, marginTop: 8 } },
+            (0, import_react2.createElement)("button", { style: styles.primary, disabled: busy, onClick: () => saveRelay() }, busy ? t("relaySaving") : t("relaySave")),
+            (0, import_react2.createElement)("button", { style: styles.btn, onClick: () => setRelayForm(null) }, t("cancel"))
+          )
+        ) : null,
+        // 对外地址二维码（配置完整时一直显示，手机扫了就能存下来）
+        configured && relay.publicUrl ? (0, import_react2.createElement)(
+          "div",
+          { style: { marginTop: 10, background: "var(--dsw-alias-bg-layer-2,#f3f4f6)", borderRadius: 10, padding: "10px 12px", textAlign: "center" } },
+          status?.relayQr ? (0, import_react2.createElement)("img", { src: status.relayQr, alt: "QR", style: styles.qr }) : null,
+          (0, import_react2.createElement)("div", { style: styles.code }, relay.publicUrl),
+          (0, import_react2.createElement)("div", { style: styles.muted }, t("relayQrHint"))
+        ) : null,
+        // ----- 设备管理 -----
+        configured ? (0, import_react2.createElement)(
+          "div",
+          { style: { marginTop: 12, borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 10 } },
+          (0, import_react2.createElement)(
+            "div",
+            { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
+            (0, import_react2.createElement)(
+              "span",
+              { style: { fontWeight: 600, fontSize: 13 } },
+              `${t("deviceTitle")} \xB7 ${fmt(t, "deviceCount", { n: devices.devices.length })}`
+            ),
+            (0, import_react2.createElement)(
+              "button",
+              { style: styles.btn, disabled: busy || pairing !== null, onClick: createPairing },
+              busy ? t("deviceAdding") : t("deviceAdd")
+            )
+          ),
+          (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 4 } }, t("deviceIntro")),
+          // 配对二维码面板
+          pairing ? (0, import_react2.createElement)(
+            "div",
+            { style: { marginTop: 8, background: "var(--dsw-alias-bg-layer-2,#f3f4f6)", borderRadius: 10, padding: "10px 12px", textAlign: "center" } },
+            (0, import_react2.createElement)("div", { style: { fontWeight: 600, fontSize: 13 } }, t("devicePairTitle")),
+            pairing.pairQr ? (0, import_react2.createElement)("img", { src: pairing.pairQr, alt: "Pair QR", style: styles.qr }) : null,
+            (0, import_react2.createElement)("div", { style: styles.code }, pairing.pairUrl),
+            (0, import_react2.createElement)("div", { style: styles.muted }, t("devicePairHint")),
+            (0, import_react2.createElement)(
+              "div",
+              { style: { ...styles.muted, marginTop: 4 } },
+              fmt(t, "devicePairExpire", { time: new Date(pairing.expiresAt).toLocaleTimeString() })
+            ),
+            (0, import_react2.createElement)("button", { style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12, marginTop: 6 }, onClick: cancelPairing }, t("devicePairCancel"))
+          ) : null,
+          // 待批准
+          devices.pending.length > 0 ? (0, import_react2.createElement)(
+            "div",
+            { style: { marginTop: 8 } },
+            (0, import_react2.createElement)("div", { style: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-state-warn-primary,#b45309)" } }, t("devicePendingTitle")),
+            devices.pending.map((d) => (0, import_react2.createElement)(
+              "div",
+              { key: d.id, style: styles.deviceRow },
+              (0, import_react2.createElement)("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, d.name),
+              (0, import_react2.createElement)(
+                "span",
+                { style: { display: "inline-flex", gap: 6, flexShrink: 0 } },
+                (0, import_react2.createElement)("button", { style: { ...styles.primary, height: 24, padding: "0 10px", fontSize: 12 }, onClick: () => deviceAction(POCKET_ENDPOINTS.deviceApprove, d.id, "deviceApprovedDone") }, t("deviceApprove")),
+                (0, import_react2.createElement)("button", { style: { ...styles.btn, height: 24, padding: "0 10px", fontSize: 12 }, onClick: () => deviceAction(POCKET_ENDPOINTS.deviceReject, d.id, "deviceRejectedDone") }, t("deviceReject"))
+              )
+            ))
+          ) : null,
+          // 已批准
+          devices.devices.length === 0 ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 6 } }, t("deviceNone")) : devices.devices.map((d) => (0, import_react2.createElement)(
+            "div",
+            { key: d.id, style: styles.deviceRow },
+            (0, import_react2.createElement)(
+              "span",
+              { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+              d.name,
+              (0, import_react2.createElement)(
+                "span",
+                { style: { ...styles.muted, marginLeft: 6 } },
+                `${t("deviceLastLogin")}: ${d.lastLoginAt ? new Date(d.lastLoginAt).toLocaleString() : t("deviceNever")}`
+              )
+            ),
+            (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 24, padding: "0 10px", fontSize: 12, color: "var(--dsw-alias-state-error-primary,#dc2626)", flexShrink: 0 },
+              onClick: () => setRevokeTarget(d)
+            }, t("deviceRevoke"))
+          ))
+        ) : null
+      );
+    })(),
     // 恢复出厂设置：设置出问题时的临时兜底（最底部，避免误触）
     (0, import_react2.createElement)(
       "div",
@@ -2691,13 +3138,66 @@ function PocketSettingsTab({ rpcCall, t }) {
         !disclaimerChecked ? (0, import_react2.createElement)("div", { style: { marginTop: 8, fontSize: 12, color: "var(--dsw-alias-state-error-primary,#dc2626)" } }, t("disclaimerHint")) : null
       )
     ) : null,
+    // 常开知情同意（一次性）：相对 cloudflared「每次开启都弹」，这里刻意的放宽——
+    // 常开的意义就是不用每次点，所以同意改为配置阶段勾一次并由服务端强制校验。
+    consentOpen ? (0, import_react2.createElement)(
+      "div",
+      { style: { position: "fixed", inset: 0, zIndex: 1e4, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+      (0, import_react2.createElement)(
+        "div",
+        { style: { background: "var(--dsw-alias-bg-layer-1,#fff)", borderRadius: 12, maxWidth: 440, width: "100%", padding: "20px 22px", boxShadow: "0 8px 32px rgba(0,0,0,.18)", maxHeight: "85vh", overflowY: "auto" } },
+        (0, import_react2.createElement)("div", { style: { fontWeight: 600, fontSize: 15, color: "var(--dsw-alias-state-warn-primary,#b45309)", marginBottom: 10 } }, t("relayConsentTitle")),
+        (0, import_react2.createElement)("div", { style: { fontSize: 13, lineHeight: 1.75, color: "var(--dsw-alias-label-primary,inherit)", whiteSpace: "pre-line" } }, t("relayConsentBody")),
+        (0, import_react2.createElement)(
+          "label",
+          { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13, cursor: "pointer" } },
+          (0, import_react2.createElement)("input", { type: "checkbox", checked: consentChecked, onChange: (e) => setConsentChecked(e.target.checked), style: { width: 16, height: 16 } }),
+          t("relayConsentAgree")
+        ),
+        (0, import_react2.createElement)(
+          "div",
+          { style: { display: "flex", gap: 8, marginTop: 16 } },
+          (0, import_react2.createElement)("button", { style: { ...styles.btn, flex: 1 }, onClick: () => setConsentOpen(false) }, t("cancel")),
+          (0, import_react2.createElement)("button", {
+            style: { ...styles.primary, flex: 1, opacity: consentChecked ? 1 : 0.5 },
+            disabled: !consentChecked,
+            onClick: confirmConsent
+          }, t("relayConsentAgree"))
+        ),
+        !consentChecked ? (0, import_react2.createElement)("div", { style: { marginTop: 8, fontSize: 12, color: "var(--dsw-alias-state-error-primary,#dc2626)" } }, t("relayConsentHint")) : null
+      )
+    ) : null,
+    // 撤销设备确认（撤销 = 那台手机要重新配对，不可轻点）
+    revokeTarget ? (0, import_react2.createElement)(
+      "div",
+      { style: { position: "fixed", inset: 0, zIndex: 1e4, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+      (0, import_react2.createElement)(
+        "div",
+        { style: { background: "var(--dsw-alias-bg-layer-1,#fff)", borderRadius: 12, maxWidth: 400, width: "100%", padding: "20px 22px", boxShadow: "0 8px 32px rgba(0,0,0,.18)" } },
+        (0, import_react2.createElement)("div", { style: { fontWeight: 600, fontSize: 15, color: "var(--dsw-alias-state-error-primary,#dc2626)", marginBottom: 10 } }, `${t("deviceRevoke")} \xB7 ${revokeTarget.name}`),
+        (0, import_react2.createElement)("div", { style: { fontSize: 13, lineHeight: 1.7, color: "var(--dsw-alias-label-primary,inherit)" } }, t("deviceRevokeConfirm")),
+        (0, import_react2.createElement)(
+          "div",
+          { style: { display: "flex", gap: 8, marginTop: 16 } },
+          (0, import_react2.createElement)("button", { style: { ...styles.btn, flex: 1 }, onClick: () => setRevokeTarget(null) }, t("cancel")),
+          (0, import_react2.createElement)("button", {
+            style: { ...styles.primary, flex: 1, background: "var(--dsw-alias-state-error-primary,#dc2626)" },
+            onClick: () => {
+              const d = revokeTarget;
+              setRevokeTarget(null);
+              void deviceAction(POCKET_ENDPOINTS.deviceRevoke, d.id, "deviceRevokeDone");
+            }
+          }, t("deviceRevoke"))
+        )
+      )
+    ) : null,
     // 页面最底部：反馈入口
     (0, import_react2.createElement)(
       "div",
       { style: { ...styles.block, textAlign: "center" } },
       (0, import_react2.createElement)(
         "a",
-        { href: "https://github.com/shaobeichen/dsh-pocket/issues", target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: "var(--dsw-alias-label-secondary,#6b7280)", textDecoration: "none" } },
+        { href: "https://github.com/kinderao/dsh-pocket-relay/issues", target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: "var(--dsw-alias-label-secondary,#6b7280)", textDecoration: "none" } },
         t("feedback")
       )
     )

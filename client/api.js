@@ -15,6 +15,18 @@ export const POCKET_ENDPOINTS = Object.freeze({
   lanSetEnabled: 'lan.setEnabled',
   pinSetCustom: 'pin.setCustom',
   pocketReset: 'pocket.reset',
+  // 自建中继通道（替代 cloudflared 的传输层）。配置好即常开，无需手动开启。
+  relaySetConfig: 'relay.setConfig',
+  relaySetEnabled: 'relay.setEnabled',
+  // 设备管理（设备认证）：生成配对码、批准/拒绝/撤销设备。
+  // 这些端点只对本机 loopback 开放——代理层会拒绝非本机来源调 /dsh-pocket（白名单除外），
+  // 所以「已通过设备认证的手机」也拿不到它们，见 lib/proxy.mjs。
+  deviceList: 'device.list',
+  devicePairingCreate: 'device.pairing.create',
+  devicePairingCancel: 'device.pairing.cancel',
+  deviceApprove: 'device.approve',
+  deviceReject: 'device.reject',
+  deviceRevoke: 'device.revoke',
   // 移动端「复制文件内容」（issue #17）：手机经此 RPC 让主机读取文件正文，
   // 再写入剪贴板——因为手机无法直接打开电脑上的文件。
   fileRead: 'pocket.fileRead',
@@ -69,5 +81,8 @@ export function redactStatus(s) {
     tunnelState: s?.tunnelState ?? { phase: 'idle' },
     tunnelConfig: s?.tunnelConfig ?? { mode: 'quick', hostname: '', tokenSet: false },
     dshPort: s?.dshPort ?? null,
+    relayRunning: s?.relayRunning === true,
+    relayState: s?.relayState ?? { phase: 'idle' },
+    relayQr: s?.relayQr ?? null,
   };
 }

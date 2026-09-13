@@ -1,0 +1,67 @@
+{
+  "_readme": "dsh-pocket-relay（Go 版）配置。以 _ 开头的字段是注释，程序会忽略。部署步骤见 relay/README.md。",
+
+  "_token": "agent 通道的唯一凭据。用 `./dsh-pocket-relay gen-token` 生成，至少 24 字符；PC 端设置页要填同一串。",
+  "token": "在此填入 gen-token 生成的串",
+
+  "_agent": "PC 侧 relay 客户端连这里。TLS 由本程序自己终结（证书见下面的 cert 段），不经过 nginx、不占用 443。",
+  "agent": {
+    "host": "0.0.0.0",
+    "port": 8444,
+    "tls": true
+  },
+
+  "_visitor": "手机浏览器连这里。证书只对 cert.domain 那个域名有效，所以手机必须用域名访问、不能用 IP。",
+  "_visitor_proxyProtocol": "若前面还有一层 nginx 终结 TLS，把 tls 改成 false、host 改成 127.0.0.1，并把 proxyProtocol 打开。",
+  "visitor": {
+    "host": "0.0.0.0",
+    "port": 8443,
+    "tls": true,
+    "proxyProtocol": false
+  },
+
+  "_admin": "Web 管理端。enabled=false 可完全关闭。password 留空时首次启动会随机生成并打印到日志。",
+  "admin": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8445,
+    "tls": true,
+    "password": "",
+    "stateFile": "./data/admin.json",
+    "allowIps": []
+  },
+
+  "_cert": "证书来源。mode=acme：内置 ACME，走 DNS-01（腾讯云），不需要开放 80/443，自动续期并热加载；mode=files：沿用外部签发好的证书。",
+  "cert": {
+    "mode": "acme",
+    "domain": "www.kinderao.host",
+    "email": "admin@kinderao.host",
+    "dir": "./data/certs",
+    "certFile": "",
+    "keyFile": "",
+    "renewDays": 30,
+    "checkHours": 12,
+    "acme": {
+      "provider": "tencentcloud",
+      "secretId": "",
+      "secretKey": "",
+      "region": "",
+      "keyType": "ec256"
+    }
+  },
+
+  "_defaultAgent": "首选接流的那台电脑（PC 端设置里的「本机名称」，留空则取主机名）。单机就填它的名字，或保持 default 并让 PC 端也填 default；多台电脑时它不在线会自动热备到注册最早的另一台，也可以在 Web 管理端随时切换。",
+  "defaultAgent": "default",
+
+  "_allowIps": "访客 IP 白名单。留空 = 不限制。填了就只有这些 IP 能连（防「常开」被全网扫）。",
+  "allowIps": [],
+
+  "_limits": "限流与超时。常开模式下建议把 maxNewPerMinutePerIp 调小一点。",
+  "limits": {
+    "openTimeoutMs": 10000,
+    "maxStreams": 64,
+    "maxConcurrentPerIp": 32,
+    "maxNewPerMinutePerIp": 240,
+    "agentIdleMs": 90000
+  }
+}

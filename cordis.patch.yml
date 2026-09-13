@@ -1,5 +1,11 @@
-# dsh-pocket bundle patch（dsh.bundle manifest 要求的加载配置）
+# dsh-pocket-relay bundle patch（dsh.bundle manifest 要求的加载配置）
 # 单包单插件：装一次，设置页「手机访问」全部功能到位。
+#
+# 注意 id 与 name 的分工（别随手改成一样的）：
+#   - name：loader 据此解析 npm 包名，必须与 package.json 的 name 一致；
+#   - id：市场「热禁用 / 启用」开关写 profile 补丁时认的就是它。刻意保留
+#     dsh-pocket 这个历史 id，这样从旧包名升级上来的用户，原有的启用/停用
+#     状态不会失配。
 - insert:
     - id: dsh-pocket
-      name: dsh-pocket
+      name: dsh-pocket-relay

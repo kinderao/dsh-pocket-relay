@@ -1,10 +1,11 @@
 {
-  "name": "dsh-pocket",
-  "description": "把 DeepSeek Harness 装进你的口袋：一个包、一个设置页，手机扫码即同步访问电脑上的 DSH（局域网 + 公网，实时同屏）。",
+  "name": "dsh-pocket-relay",
+  "description": "把 DeepSeek Harness 装进你的口袋：局域网扫码，或用自建 relay 中继随时随地远程访问（设备级认证、多台电脑共存与热备，实时同屏）。",
   "type": "module",
   "main": "lib/index.js",
   "bin": {
-    "dsh-pocket": "bin/dsh-pocket.mjs"
+    "dsh-pocket-relay": "bin/dsh-pocket-relay.mjs",
+    "dsh-pocket": "bin/dsh-pocket-relay.mjs"
   },
   "exports": {
     ".": {
@@ -23,6 +24,8 @@
   ],
   "scripts": {
     "build:client": "node client/build.mjs",
+    "build:relay": "node relay/scripts/build.mjs",
+    "build:relay:all": "node relay/scripts/build.mjs --all",
     "release": "semantic-release",
     "test": "node --test --test-timeout=30000 \"test/*.test.js\"",
     "test:local": "node --test --test-timeout=300000 \"test/local/*.test.js\""
@@ -51,8 +54,9 @@
     "dsh-plugin",
     "mobile",
     "remote",
-    "qr",
-    "tunnel"
+    "relay",
+    "self-hosted",
+    "qr"
   ],
   "dsh": {
     "bundle": {
@@ -71,12 +75,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shaobeichen/dsh-pocket.git"
+    "url": "git+https://github.com/kinderao/dsh-pocket-relay.git"
   },
   "bugs": {
-    "url": "https://github.com/shaobeichen/dsh-pocket/issues"
+    "url": "https://github.com/kinderao/dsh-pocket-relay/issues"
   },
-  "homepage": "https://github.com/shaobeichen/dsh-pocket",
+  "homepage": "https://github.com/kinderao/dsh-pocket-relay",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
