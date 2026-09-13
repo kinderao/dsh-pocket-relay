@@ -3,6 +3,13 @@ name: Release
 # 手动触发（Actions 页面 → Release → Run workflow）：
 # push 只更新代码，本地测过没问题后再来这里手动发版（semantic-release
 # 按自上次发版以来的提交自动定版本号，无需手动填）
+#
+# 两个 job 的分工：
+#   release        —— semantic-release：定版本、写 CHANGELOG、发 npm、建 GitHub Release
+#   relay-binaries —— 编译 Go 服务端三个平台的二进制，挂到同一个 Release 的资产上
+#
+# 为什么二进制不放进 npm 包：插件运行时不引用 relay/dist（Go 服务端是给用户
+# 部署到自己服务器上的），打进去会让每个装插件的人白下 31MB。所以走 Release 资产。
 on:
   workflow_dispatch:
 
@@ -28,3 +35,46 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm run release
+
+  relay-binaries:
+    # 等 semantic-release 发完，这样 check out 到的 package.json 才是新版本号
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          # relay/go.mod 要求 go 1.25
+          go-version: '1.25'
+
+      - name: 读取刚发布的版本号
+        id: v
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # 关键：显式传版本号。build.mjs 的默认值是硬编码的，忘了传就会产出
+      # 一个内嵌版本号与 Release tag 对不上的二进制（管理端会显示错的版本）。
+      - name: 交叉编译三个平台
+        run: DSHP_RELAY_VERSION="${{ steps.v.outputs.version }}" npm run build:relay:all
+
+      - name: 生成校验和
+        working-directory: relay/dist
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 挂到 Release 资产
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          files: |
+            relay/dist/dsh-pocket-relay-linux-amd64
+            relay/dist/dsh-pocket-relay-linux-arm64
+            relay/dist/dsh-pocket-relay-windows-amd64.exe
+            relay/dist/SHA256SUMS.txt
