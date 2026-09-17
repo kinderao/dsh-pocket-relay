@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: "dsh-pocket",
+  id: "dsh-pocket-relay",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

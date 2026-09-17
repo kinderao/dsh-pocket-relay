@@ -1,5 +1,5 @@
-// dsh-pocket 网页客户端打包：client/index.jsx → client/client.js
-import { mkdir, writeFile } from 'node:fs/promises';
+// dsh-pocket-relay 网页客户端打包：client/index.jsx → client/client.js
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -7,7 +7,18 @@ import { build } from 'esbuild';
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(sourceDir, '..');
 const outputPath = resolve(packageRoot, 'client/client.js');
-const loaderId = process.env.DSH_POCKET_CLIENT_ID ?? 'dsh-pocket';
+
+// loader id 必须与 package.json 的 name 一致：DSH 按包名去 __ModuleLoader__
+// 里找这个前端模块，对不上就会加载了文件却报
+// "loaded without registering <包名> via __ModuleLoader__.load"，整个客户端
+// 插件加载失败。这里直接读 package.json，避免再出现「改了包名但这里没跟着改」
+// 的脱节——曾经硬编码 'dsh-pocket'，包名改成 dsh-pocket-relay 后就踩了这个坑。
+//
+// 注意与 cordis.patch.yml 的 id 区分：那个 id 是市场「启用/禁用」开关的身份键，
+// 沿用历史值 dsh-pocket，与这里的 loader id 无关（参照 dshmarket：它的 patch id
+// 是 dsh-market，而 loader id 与包名一致，都是 dshmarket）。
+const pkg = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));
+const loaderId = process.env.DSH_POCKET_CLIENT_ID ?? pkg.name;
 
 const result = await build({
   entryPoints: [resolve(sourceDir, 'index.jsx')],
