@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/kinderao/dsh-pocket-relay/compare/v1.0.1...v1.0.2) (2026-09-17)
+
+
+### Bug Fixes
+
+* **client:** loader id 跟随包名，修复市场安装后客户端加载失败 ([4c3edce](https://github.com/kinderao/dsh-pocket-relay/commit/4c3edcea5d7363c974728683a442f2967728a6d6))
+
 ## [1.0.1](https://github.com/kinderao/dsh-pocket-relay/compare/v1.0.0...v1.0.1) (2026-09-13)
 
 
